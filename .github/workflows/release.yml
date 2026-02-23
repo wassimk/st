@@ -97,11 +97,13 @@ jobs:
           path: "st-*"
 
       - name: Publish GitHub release
-        uses: softprops/action-gh-release@v2
-        with:
-          files: |
-            ${{ matrix.platform.name }}
-            ${{ matrix.platform.name }}-sha.txt
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release upload "${{ github.event.release.tag_name }}" \
+            "${{ matrix.platform.name }}" \
+            "${{ matrix.platform.name }}-sha.txt" \
+            --clobber
 
       - name: Clean up keychain
         if: always()
