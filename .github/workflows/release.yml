@@ -99,7 +99,9 @@ jobs:
       - name: Publish GitHub release
         uses: softprops/action-gh-release@v2
         with:
-          files: "st*"
+          files: |
+            ${{ matrix.platform.name }}
+            ${{ matrix.platform.name }}-sha.txt
 
       - name: Clean up keychain
         if: always()
