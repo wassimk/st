@@ -56,6 +56,7 @@ jobs:
             desc "Set your status across Slack, GitHub, and Asana with a single command"
             homepage "https://github.com/wassimk/st"
             version "${{ steps.version.outputs.version }}"
+            license "MIT"
 
             depends_on :macos
 
