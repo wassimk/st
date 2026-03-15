@@ -581,12 +581,11 @@ fn run_set(status: &Status, back_date: Option<DateTime<Local>>, config: &Config)
     let is_back = status.keyword == "back";
 
     // Slack (always runs — "back" clears DND then sets catching-up status)
-    if is_back {
-        if let Ok(token) = std::env::var("SLACK_PAT") {
-            if let Err(e) = end_slack_dnd(&token) {
-                eprintln!("  Slack   \u{2717} ending DND: {e}");
-            }
-        }
+    if is_back
+        && let Ok(token) = std::env::var("SLACK_PAT")
+        && let Err(e) = end_slack_dnd(&token)
+    {
+        eprintln!("  Slack   \u{2717} ending DND: {e}");
     }
     let show_back_in_text = matches!(status.keyword, "vacation" | "sick" | "away");
     match set_slack_status(status, back_date, show_back_in_text) {
