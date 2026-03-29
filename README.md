@@ -5,7 +5,7 @@
 
 Set your status across Slack, GitHub, and Asana with a single command.
 
-## Install
+## 🛠️ Install
 
 ```
 brew install wassimk/tap/st
@@ -17,7 +17,7 @@ Or build from source:
 cargo install --path .
 ```
 
-## Setup
+## ⚙️ Setup
 
 ### Environment Variables
 
@@ -48,7 +48,7 @@ To find your Asana user GID, run:
 curl -s -H "Authorization: Bearer $ASANA_PAT" https://app.asana.com/api/1.0/users/me | jq '.data.gid'
 ```
 
-## Usage
+## 💻 Usage
 
 ```
 st <keyword> [back_date] [back_time]
