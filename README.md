@@ -2,6 +2,8 @@
 
 Set your status across Slack and GitHub with a single command, with reminders for Linear.
 
+![st demo](demo/st.gif)
+
 ## 🛠️ Install
 
 ```
