@@ -3,7 +3,7 @@
 > [!CAUTION]
 > This project is under active development and is very experimental. It is a personal tool. Use at your own risk.
 
-Set your status across Slack, GitHub, and Asana with a single command.
+Set your status across Slack and GitHub with a single command, with reminders for Linear.
 
 ## 🛠️ Install
 
@@ -25,7 +25,6 @@ Set these in your shell profile:
 
 - `SLACK_PAT` — Slack User OAuth Token (`xoxp-...`) with `users.profile:write` and `dnd:write` scopes
 - `GITHUB_PAT` — GitHub classic Personal Access Token with `user` and `read:org` scopes
-- `ASANA_PAT` — Asana Personal Access Token
 
 ### Config File
 
@@ -33,19 +32,12 @@ Create `~/.config/st/config.toml`:
 
 ```toml
 github_org_id = "YOUR_ORG_GRAPHQL_NODE_ID"  # limits GitHub busy status to this org
-asana_user_gid = "YOUR_ASANA_USER_GID"       # for reading Asana OOO status
 ```
 
 To find your GitHub org's GraphQL node ID, run:
 
 ```
 gh api graphql -f query='{ organization(login: "your-org") { id } }'
-```
-
-To find your Asana user GID, run:
-
-```
-curl -s -H "Authorization: Bearer $ASANA_PAT" https://app.asana.com/api/1.0/users/me | jq '.data.gid'
 ```
 
 ## 💻 Usage
@@ -56,18 +48,20 @@ st <keyword> [back_date] [back_time]
 
 ### Keywords
 
-| Keyword | Slack | GitHub | Asana |
+| Keyword | Slack | GitHub | Linear |
 |---|---|---|---|
 | `lunch` | Lunchin' + DND | — | — |
 | `zoom` | In a meeting (Zoom) | — | — |
 | `tuple` | Pairing (Tuple) | — | — |
 | `meet` | In a meeting | — | — |
 | `eod` | Done for the day + DND | — | — |
-| `vacation` | Vacation + DND | Busy (org-scoped) | Reminds to set OOO |
-| `sick` | Out sick + DND | — | Reminds to set OOO |
-| `away` | Out of office + DND | Busy (org-scoped) | Reminds to set OOO |
-| `back` | Catching up, clears DND | Clears busy | Reminds to clear OOO |
-| `clear` | Clears everything | Clears status | Reminds to clear OOO |
+| `vacation` | Vacation + DND | Busy (org-scoped) | Reminds to add Google Calendar OOO |
+| `sick` | Out sick + DND | — | Reminds to add Google Calendar OOO |
+| `away` | Out of office + DND | Busy (org-scoped) | Reminds to add Google Calendar OOO |
+| `back` | Catching up, clears DND | Clears busy | Reminds to end OOO early |
+| `clear` | Clears everything | Clears status | — |
+
+Linear shows you as Away from your Google Calendar out-of-office events, and it has no way to set that from the API, so `st` reminds you instead.
 
 ### Examples
 

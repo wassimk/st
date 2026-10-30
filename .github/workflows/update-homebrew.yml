@@ -53,7 +53,7 @@ jobs:
         run: |
           cat > Formula/st.rb << 'RUBY'
           class St < Formula
-            desc "Set your status across Slack, GitHub, and Asana with a single command"
+            desc "Set your status across Slack and GitHub with a single command"
             homepage "https://github.com/wassimk/st"
             version "${{ steps.version.outputs.version }}"
             license "MIT"

@@ -5,13 +5,15 @@ use serde::Deserialize;
 use std::path::PathBuf;
 
 const DEFAULT_BACK_HOUR: u32 = 7;
+const LINEAR_OOO_REMINDER: &str =
+    "Add an out-of-office event in Google Calendar (Linear shows you as Away)";
 
 // --- Config ---
 
 #[derive(Deserialize)]
+#[derive(Default)]
 struct Config {
     github_org_id: Option<String>,
-    asana_user_gid: Option<String>,
 }
 
 fn config_path() -> PathBuf {
@@ -27,15 +29,9 @@ fn load_config() -> Config {
     match std::fs::read_to_string(&path) {
         Ok(contents) => toml::from_str(&contents).unwrap_or_else(|e| {
             eprintln!("Warning: failed to parse {}: {e}", path.display());
-            Config {
-                github_org_id: None,
-                asana_user_gid: None,
-            }
+            Config::default()
         }),
-        Err(_) => Config {
-            github_org_id: None,
-            asana_user_gid: None,
-        },
+        Err(_) => Config::default(),
     }
 }
 
@@ -219,8 +215,7 @@ struct Status {
     slack_emoji: &'static str,
     slack_dnd: bool,
     github_busy: bool,
-    #[allow(dead_code)]
-    asana_dnd: bool, // Asana API doesn't support setting OOO yet
+    out_of_office: bool,
 }
 
 const STATUSES: &[Status] = &[
@@ -230,7 +225,7 @@ const STATUSES: &[Status] = &[
         slack_emoji: ":fork_and_knife:",
         slack_dnd: true,
         github_busy: false,
-        asana_dnd: false,
+        out_of_office: false,
     },
     Status {
         keyword: "zoom",
@@ -238,7 +233,7 @@ const STATUSES: &[Status] = &[
         slack_emoji: ":video_camera:",
         slack_dnd: false,
         github_busy: false,
-        asana_dnd: false,
+        out_of_office: false,
     },
     Status {
         keyword: "tuple",
@@ -246,7 +241,7 @@ const STATUSES: &[Status] = &[
         slack_emoji: ":couple:",
         slack_dnd: false,
         github_busy: false,
-        asana_dnd: false,
+        out_of_office: false,
     },
     Status {
         keyword: "meet",
@@ -254,7 +249,7 @@ const STATUSES: &[Status] = &[
         slack_emoji: ":calendar:",
         slack_dnd: false,
         github_busy: false,
-        asana_dnd: false,
+        out_of_office: false,
     },
     Status {
         keyword: "eod",
@@ -262,7 +257,7 @@ const STATUSES: &[Status] = &[
         slack_emoji: ":wave:",
         slack_dnd: true,
         github_busy: false,
-        asana_dnd: true,
+        out_of_office: false,
     },
     Status {
         keyword: "vacation",
@@ -270,7 +265,7 @@ const STATUSES: &[Status] = &[
         slack_emoji: ":desert_island:",
         slack_dnd: true,
         github_busy: true,
-        asana_dnd: true,
+        out_of_office: true,
     },
     Status {
         keyword: "sick",
@@ -278,7 +273,7 @@ const STATUSES: &[Status] = &[
         slack_emoji: ":face_with_thermometer:",
         slack_dnd: true,
         github_busy: false,
-        asana_dnd: true,
+        out_of_office: true,
     },
     Status {
         keyword: "away",
@@ -286,7 +281,7 @@ const STATUSES: &[Status] = &[
         slack_emoji: ":no_entry:",
         slack_dnd: true,
         github_busy: true,
-        asana_dnd: true,
+        out_of_office: true,
     },
     Status {
         keyword: "back",
@@ -294,7 +289,7 @@ const STATUSES: &[Status] = &[
         slack_emoji: ":inbox_tray:",
         slack_dnd: false,
         github_busy: false,
-        asana_dnd: false,
+        out_of_office: false,
     },
 ];
 
@@ -479,53 +474,6 @@ struct SlackResponse {
     error: Option<String>,
 }
 
-// --- Asana (no API for setting OOO — can only read vacation_dates) ---
-
-#[derive(Deserialize)]
-struct AsanaResponse {
-    data: Vec<AsanaWorkspaceMembership>,
-}
-
-#[derive(Deserialize)]
-struct AsanaWorkspaceMembership {
-    vacation_dates: Option<AsanaVacationDates>,
-}
-
-#[derive(Deserialize)]
-#[allow(dead_code)]
-struct AsanaVacationDates {
-    start_on: Option<String>,
-    end_on: Option<String>,
-}
-
-fn asana_ooo_is_set(config: &Config) -> Result<bool> {
-    let token = std::env::var("ASANA_PAT").context("ASANA_PAT not set")?;
-    let user_gid = config
-        .asana_user_gid
-        .as_deref()
-        .context("asana_user_gid not set in config")?;
-
-    let url = format!(
-        "https://app.asana.com/api/1.0/users/{user_gid}/workspace_memberships?opt_fields=vacation_dates"
-    );
-
-    let resp: AsanaResponse = ureq::get(&url)
-        .header("Authorization", &format!("Bearer {token}"))
-        .call()?
-        .into_body()
-        .read_json()?;
-
-    Ok(resp.data.iter().any(|m| m.vacation_dates.is_some()))
-}
-
-fn asana_ooo_summary(config: &Config) -> Option<String> {
-    match asana_ooo_is_set(config) {
-        Ok(true) => Some("OOO is set".into()),
-        Ok(false) => None,
-        Err(_) => None,
-    }
-}
-
 // --- CLI ---
 
 #[derive(Parser)]
@@ -570,7 +518,7 @@ fn main() {
     };
 
     if is_clear {
-        run_clear(&config);
+        run_clear();
     } else {
         let status = find_status(&keyword).unwrap();
         run_set(status, back_dt, &config);
@@ -627,25 +575,17 @@ fn run_set(status: &Status, back_date: Option<DateTime<Local>>, config: &Config)
         println!("  GitHub  - No change");
     }
 
-    // Asana (no API for setting OOO — remind when relevant)
-    if status.keyword == "vacation" || status.keyword == "away" || status.keyword == "sick" {
-        if asana_ooo_summary(config).is_none() {
-            println!("  Asana   ! Set Out of Office manually: Profile (icon) > Set out of office");
-        } else {
-            println!("  Asana   \u{2713} Out of Office already set");
-        }
+    // Linear reads OOO from Google Calendar, so remind instead of setting it
+    if status.out_of_office {
+        println!("  Linear  ! {LINEAR_OOO_REMINDER}");
     } else if is_back {
-        if asana_ooo_summary(config).is_some() {
-            println!("  Asana   ! Clear Out of Office manually: Profile (icon) > Set out of office");
-        } else {
-            println!("  Asana   - No change");
-        }
+        println!("  Linear  ! If you're back early, end your Google Calendar out-of-office event");
     } else {
-        println!("  Asana   - No change");
+        println!("  Linear  - No change");
     }
 }
 
-fn run_clear(config: &Config) {
+fn run_clear() {
     match clear_slack_status() {
         Ok(()) => println!("  Slack   \u{2713} Cleared (DND off)"),
         Err(e) => eprintln!("  Slack   \u{2717} {e}"),
@@ -656,9 +596,5 @@ fn run_clear(config: &Config) {
         Err(e) => eprintln!("  GitHub  \u{2717} {e}"),
     }
 
-    if asana_ooo_summary(config).is_some() {
-        println!("  Asana   ! Clear Out of Office manually: Profile (icon) > Set out of office");
-    } else {
-        println!("  Asana   - No change");
-    }
+    println!("  Linear  - No change");
 }
