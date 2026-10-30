@@ -78,7 +78,7 @@ st clear              # Clear everything
 
 ### Date Formats
 
-Day names (`friday`, `mon`), `tomorrow`, `3/10`, `3-10-2026`, `3/10/26`
+Day names (`friday`, `mon`), `tomorrow`, `3/10`, `3-10-2026`, `3/10/26`, `2026-03-10`
 
 ### Time Formats
 

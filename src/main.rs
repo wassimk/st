@@ -92,6 +92,13 @@ fn parse_date_with_separators(input: &str, today: NaiveDate) -> Option<NaiveDate
             }
             NaiveDate::from_ymd_opt(year, month, day)
         }
+        // Y-M-D or Y/M/D (4-digit year first)
+        3 if parts[0].len() == 4 => {
+            let year = parts[0].parse::<i32>().ok()?;
+            let month = parts[1].parse::<u32>().ok()?;
+            let day = parts[2].parse::<u32>().ok()?;
+            NaiveDate::from_ymd_opt(year, month, day)
+        }
         // M/D/Y or M-D-Y (2-digit or 4-digit year)
         3 => {
             let month = parts[0].parse::<u32>().ok()?;
@@ -654,6 +661,13 @@ mod tests {
         let today = date(2026, 1, 1);
         assert_eq!(parse_date_with_separators("3/10/26", today), Some(date(2026, 3, 10)));
         assert_eq!(parse_date_with_separators("3-10-2026", today), Some(date(2026, 3, 10)));
+    }
+
+    #[test]
+    fn year_month_day_is_iso_order() {
+        let today = date(2026, 1, 1);
+        assert_eq!(parse_date_with_separators("2026-03-10", today), Some(date(2026, 3, 10)));
+        assert_eq!(parse_date_with_separators("2026/3/10", today), Some(date(2026, 3, 10)));
     }
 
     #[test]
