@@ -72,11 +72,16 @@ st lunch              # DND for ~1 hour (next quarter-hour + 1hr)
 st lunch 1:30pm       # DND until 1:30pm
 st vacation friday    # Vacation until Friday 7am
 st vacation 3/10 9am  # Vacation until March 10 at 9am
+st vacation 3/10 At the beach  # Custom message in place of "Off recharging"
 st sick tomorrow      # Out sick until tomorrow 7am
 st eod                # Outside work hours, DND until 7am next work day
 st back               # Clear everything, set "Catching up" for 15 min
 st clear              # Clear everything
 ```
+
+### Custom Messages
+
+Anything after the date and optional time replaces the default status text in Slack and GitHub. For `lunch`, the message goes after the time. Quote a message that starts with a number, like `st vacation friday "3 day weekend"`, so the number isn't read as a time.
 
 ### Date Formats
 

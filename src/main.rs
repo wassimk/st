@@ -337,6 +337,7 @@ fn github_graphql(token: &str, body: &serde_json::Value) -> Result<serde_json::V
 
 fn set_github_status(
     status: &Status,
+    text: &str,
     back_date: Option<DateTime<Local>>,
     org_id: Option<&str>,
 ) -> Result<()> {
@@ -346,9 +347,11 @@ fn set_github_status(
         return Ok(());
     }
 
+    // A JSON string is also a valid GraphQL string, so quotes in a custom message are escaped
     let mut input = format!(
-        "message: \"{}\", emoji: \"{}\", limitedAvailability: true",
-        status.slack_text, status.slack_emoji,
+        "message: {}, emoji: \"{}\", limitedAvailability: true",
+        serde_json::to_string(text)?,
+        status.slack_emoji,
     );
 
     if let Some(dt) = back_date {
@@ -384,10 +387,8 @@ fn clear_github_status() -> Result<()> {
 // --- Slack integration ---
 
 // Slack shows the expiration under the status, so the text doesn't repeat it
-fn set_slack_status(status: &Status, back_date: Option<DateTime<Local>>) -> Result<()> {
+fn set_slack_status(status: &Status, text: &str, back_date: Option<DateTime<Local>>) -> Result<()> {
     let token = std::env::var("SLACK_PAT").context("SLACK_PAT not set")?;
-
-    let text = status.slack_text;
 
     let expiration = match back_date {
         Some(dt) => dt.timestamp(),
@@ -509,6 +510,8 @@ Examples:
   st eod                DND until 7am the next work day
   st vacation friday    Vacation until Friday at 7am
   st vacation 3/10 9am  Vacation until March 10 at 9am
+  st vacation 3/10 9am At the beach
+                        Same, with a custom message
   st sick tomorrow      Out sick until tomorrow at 7am
   st back               Clear DND and show Catching up for 15 minutes
   st clear              Clear everything
@@ -531,8 +534,19 @@ struct Cli {
     /// When you'll be back (see Dates below)
     back_date: Option<String>,
 
-    /// What time you'll be back (see Times below)
-    back_time: Option<String>,
+    /// What time you'll be back (see Times below), then an optional custom message
+    #[arg(value_name = "BACK_TIME] [MESSAGE", trailing_var_arg = true)]
+    extra: Vec<String>,
+}
+
+// The word after the date is a time only if it parses as one; the rest is the message
+fn split_time_and_message(extra: &[String]) -> (Option<String>, Option<String>) {
+    let (time, words) = match extra.first() {
+        Some(first) if parse_time(Some(first)).is_ok() => (Some(first.clone()), &extra[1..]),
+        _ => (None, extra),
+    };
+    let message = (!words.is_empty()).then(|| words.join(" "));
+    (time, message)
 }
 
 fn main() {
@@ -547,6 +561,13 @@ fn main() {
         );
         std::process::exit(1);
     }
+
+    // For lunch the second arg is already the time, so everything after it is the message
+    let (back_time, message) = if keyword == "lunch" {
+        (None, (!cli.extra.is_empty()).then(|| cli.extra.join(" ")))
+    } else {
+        split_time_and_message(&cli.extra)
+    };
 
     let back_dt = if keyword == "lunch" {
         let time = cli.back_date.as_deref(); // for lunch, second arg is a time
@@ -564,7 +585,7 @@ fn main() {
         Some(to_local_datetime(eod_back_date(now.date_naive(), now.time()), time))
     } else {
         cli.back_date.map(|s| {
-            parse_back_date(&s, cli.back_time.as_deref()).unwrap_or_else(|e| {
+            parse_back_date(&s, back_time.as_deref()).unwrap_or_else(|e| {
                 eprintln!("{e}");
                 std::process::exit(1);
             })
@@ -575,11 +596,12 @@ fn main() {
         run_clear();
     } else {
         let status = find_status(&keyword).unwrap();
-        run_set(status, back_dt, &config);
+        let text = message.as_deref().unwrap_or(status.slack_text);
+        run_set(status, text, back_dt, &config);
     }
 }
 
-fn run_set(status: &Status, back_date: Option<DateTime<Local>>, config: &Config) {
+fn run_set(status: &Status, text: &str, back_date: Option<DateTime<Local>>, config: &Config) {
     let is_back = status.keyword == "back";
 
     // Slack (always runs — "back" clears DND then sets catching-up status)
@@ -589,9 +611,8 @@ fn run_set(status: &Status, back_date: Option<DateTime<Local>>, config: &Config)
     {
         eprintln!("  Slack   \u{2717} ending DND: {e}");
     }
-    match set_slack_status(status, back_date) {
+    match set_slack_status(status, text, back_date) {
         Ok(()) => {
-            let text = status.slack_text;
             let dnd_detail = match (status.slack_dnd, back_date) {
                 (true, Some(dt)) => {
                     format!(" (DND until {})", format_until(dt, Local::now().date_naive()))
@@ -617,7 +638,7 @@ fn run_set(status: &Status, back_date: Option<DateTime<Local>>, config: &Config)
             Err(e) => eprintln!("  GitHub  \u{2717} {e}"),
         }
     } else if status.github_busy {
-        match set_github_status(status, back_date, config.github_org_id.as_deref()) {
+        match set_github_status(status, text, back_date, config.github_org_id.as_deref()) {
             Ok(()) => {
                 let org = match (&config.github_org_id, &config.github_org_name) {
                     (Some(_), Some(name)) => format!(" ({name} only)"),
@@ -763,6 +784,29 @@ mod tests {
         assert_eq!(parse_lunch_time("1am", morning).unwrap(), time(1, 0));
         assert_eq!(parse_lunch_time("1pm", morning).unwrap(), time(13, 0));
         assert_eq!(parse_lunch_time("13:00", morning).unwrap(), time(13, 0));
+    }
+
+    fn words(s: &str) -> Vec<String> {
+        s.split_whitespace().map(String::from).collect()
+    }
+
+    #[test]
+    fn extra_args_split_into_time_and_message() {
+        assert_eq!(split_time_and_message(&[]), (None, None));
+        assert_eq!(split_time_and_message(&words("9am")), (Some("9am".into()), None));
+        assert_eq!(
+            split_time_and_message(&words("9am At the beach")),
+            (Some("9am".into()), Some("At the beach".into()))
+        );
+        assert_eq!(
+            split_time_and_message(&words("At the beach")),
+            (None, Some("At the beach".into()))
+        );
+        // A quoted message that starts with a number is still a message
+        assert_eq!(
+            split_time_and_message(&["3 day weekend".to_string()]),
+            (None, Some("3 day weekend".into()))
+        );
     }
 
     #[test]
