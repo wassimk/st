@@ -53,7 +53,7 @@ st <keyword> [back_date] [back_time]
 |---|---|---|---|
 | `lunch` | :fork_and_knife: only + DND | — | — |
 | `meet` or `meeting` | In a meeting | — | — |
-| `tuple` | Pairing (Tuple) | — | — |
+| `pairing` | In a pairing session | — | — |
 | `eod` | Outside work hours + DND until next work day 7am | — | — |
 | `vacation` | Vacation + DND | Busy (org-scoped) | Reminds to add Google Calendar OOO |
 | `sick` | Out sick + DND | — | Reminds to add Google Calendar OOO |

@@ -277,9 +277,9 @@ const STATUSES: &[Status] = &[
         out_of_office: false,
     },
     Status {
-        keyword: "tuple",
-        slack_text: "Pairing (Tuple)",
-        slack_emoji: ":couple:",
+        keyword: "pairing",
+        slack_text: "In a pairing session",
+        slack_emoji: ":tuple:",
         slack_dnd: false,
         github_busy: false,
         out_of_office: false,
@@ -521,7 +521,7 @@ const AFTER_HELP: &str = "\
 Keywords:
   lunch     Fork and knife emoji with DND for about an hour, or until a time (st lunch 1:30pm)
   meet      In a meeting (or: st meeting)
-  tuple     Pairing (Tuple)
+  pairing   In a pairing session
   eod       Outside work hours with DND until 7am the next work day (Mon-Thu)
   vacation  Vacation with DND, GitHub busy, and a Linear out-of-office reminder
   sick      Out sick with DND and a Linear out-of-office reminder
@@ -572,7 +572,7 @@ fn main() {
 
     if !is_clear && find_status(&keyword).is_none() {
         eprintln!(
-            "Unknown keyword: {keyword}\nAvailable: lunch, meet, tuple, eod, vacation, sick, away, back, clear"
+            "Unknown keyword: {keyword}\nAvailable: lunch, meet, pairing, eod, vacation, sick, away, back, clear"
         );
         std::process::exit(1);
     }
