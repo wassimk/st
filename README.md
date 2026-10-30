@@ -100,3 +100,7 @@ Day names (`friday`, `mon`), `tomorrow`, `3/10`, `3-10-2026`, `3/10/26`, `2026-0
 ### Time Formats
 
 `9am`, `1:30pm`, `15:00`, `3p.m.` — defaults to 7am if not specified.
+
+## 🔗 Related Projects
+
+- [raycast-st](https://github.com/wassimk/raycast-st) - A [Raycast](https://www.raycast.com) extension for setting your status with `st` on macOS.
