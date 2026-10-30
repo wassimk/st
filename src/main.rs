@@ -489,6 +489,27 @@ fn end_slack_dnd(token: &str) -> Result<()> {
     Ok(())
 }
 
+// "auto" hands presence back to Slack, which shows you active while you're using it
+fn set_slack_presence_auto() -> Result<()> {
+    let token = std::env::var("SLACK_PAT").context("SLACK_PAT not set")?;
+
+    let resp: SlackResponse = ureq::post("https://slack.com/api/users.setPresence")
+        .header("Authorization", &format!("Bearer {token}"))
+        .header("Content-Type", "application/x-www-form-urlencoded")
+        .send_form([("presence", "auto")])?
+        .into_body()
+        .read_json()?;
+
+    if !resp.ok {
+        anyhow::bail!(
+            "Slack users.setPresence: {}",
+            resp.error.unwrap_or_default()
+        );
+    }
+
+    Ok(())
+}
+
 fn clear_slack_status() -> Result<()> {
     let token = std::env::var("SLACK_PAT").context("SLACK_PAT not set")?;
     set_slack_profile_status("", "")?;
@@ -591,7 +612,7 @@ Keywords:
   away      Away for a bit until 5pm (or a time you give) with DND, GitHub busy, and a
             Linear out-of-office reminder
   back      Catching up for 15 minutes, ends DND, and clears GitHub busy
-  clear     Clears Slack and GitHub status and ends DND
+  clear     Clears Slack and GitHub status, ends DND, and sets you active
   clear --if KEYWORD
             Clears only the Slack status, and only if its emoji is still KEYWORD's
             (needs the users.profile:read scope)
@@ -872,6 +893,11 @@ fn run_clear() {
     match clear_slack_status() {
         Ok(()) => println!("  Slack   \u{2713} Cleared (DND off)"),
         Err(e) => eprintln!("  Slack   \u{2717} {e}"),
+    }
+
+    match set_slack_presence_auto() {
+        Ok(()) => println!("  Slack   \u{2713} Active"),
+        Err(e) => eprintln!("  Slack   \u{2717} setting active: {e}"),
     }
 
     match clear_github_status() {
