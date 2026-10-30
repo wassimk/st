@@ -260,7 +260,7 @@ struct Status {
 const STATUSES: &[Status] = &[
     Status {
         keyword: "lunch",
-        slack_text: "Lunchin'",
+        slack_text: "",
         slack_emoji: ":fork_and_knife:",
         slack_dnd: true,
         github_busy: false,
@@ -517,7 +517,7 @@ struct SlackResponse {
 
 const AFTER_HELP: &str = "\
 Keywords:
-  lunch     Lunchin' with DND for about an hour, or until a time (st lunch 1:30pm)
+  lunch     Fork and knife emoji with DND for about an hour, or until a time (st lunch 1:30pm)
   zoom      In a meeting (Zoom)
   tuple     Pairing (Tuple)
   meet      In a meeting
@@ -629,7 +629,12 @@ fn run_set(status: &Status, back_date: Option<DateTime<Local>>, config: &Config)
                 _ => String::new(),
             };
             let dnd_cleared = if is_back { " (DND off)" } else { "" };
-            println!("  Slack   \u{2713} {} {}{}{}", text, status.slack_emoji, dnd_detail, dnd_cleared);
+            let label = if text.is_empty() {
+                status.slack_emoji.to_string()
+            } else {
+                format!("{text} {}", status.slack_emoji)
+            };
+            println!("  Slack   \u{2713} {label}{dnd_detail}{dnd_cleared}");
         }
         Err(e) => eprintln!("  Slack   \u{2717} {e}"),
     }

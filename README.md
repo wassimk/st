@@ -51,7 +51,7 @@ st <keyword> [back_date] [back_time]
 
 | Keyword | Slack | GitHub | Linear |
 |---|---|---|---|
-| `lunch` | Lunchin' + DND | — | — |
+| `lunch` | :fork_and_knife: only + DND | — | — |
 | `zoom` | In a meeting (Zoom) | — | — |
 | `tuple` | Pairing (Tuple) | — | — |
 | `meet` | In a meeting | — | — |
