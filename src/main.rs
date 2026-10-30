@@ -211,6 +211,16 @@ fn is_workday(date: NaiveDate) -> bool {
     !matches!(date.weekday(), Weekday::Fri | Weekday::Sat | Weekday::Sun)
 }
 
+// Before the back hour on a workday you're still finishing the night before,
+// so eod ends this morning rather than skipping a whole day
+fn eod_back_date(today: NaiveDate, now: NaiveTime) -> NaiveDate {
+    if is_workday(today) && now.hour() < DEFAULT_BACK_HOUR {
+        today
+    } else {
+        next_workday(today)
+    }
+}
+
 fn next_workday(today: NaiveDate) -> NaiveDate {
     let mut date = today + chrono::Duration::days(1);
     while !is_workday(date) {
@@ -548,7 +558,8 @@ fn main() {
     } else if keyword == "eod" && cli.back_date.is_none() {
         // Pause until the start of the next work day, so Thursday's eod lasts the weekend
         let time = NaiveTime::from_hms_opt(DEFAULT_BACK_HOUR, 0, 0).unwrap();
-        Some(to_local_datetime(next_workday(Local::now().date_naive()), time))
+        let now = Local::now();
+        Some(to_local_datetime(eod_back_date(now.date_naive(), now.time()), time))
     } else {
         cli.back_date.map(|s| {
             parse_back_date(&s, cli.back_time.as_deref()).unwrap_or_else(|e| {
@@ -716,6 +727,22 @@ mod tests {
         assert_eq!(next_workday(date(2026, 10, 30)), date(2026, 11, 2));
         assert_eq!(next_workday(date(2026, 10, 31)), date(2026, 11, 2));
         assert_eq!(next_workday(date(2026, 11, 1)), date(2026, 11, 2));
+    }
+
+    #[test]
+    fn eod_ends_next_work_morning_in_the_evening() {
+        // Wednesday 5pm ends Thursday, Thursday 5pm ends Monday
+        assert_eq!(eod_back_date(date(2026, 10, 28), time(17, 0)), date(2026, 10, 29));
+        assert_eq!(eod_back_date(date(2026, 10, 29), time(17, 0)), date(2026, 11, 2));
+    }
+
+    #[test]
+    fn eod_after_midnight_ends_this_morning_on_a_workday() {
+        // Thursday 12:30am still ends Thursday 7am, not Monday
+        assert_eq!(eod_back_date(date(2026, 10, 29), time(0, 30)), date(2026, 10, 29));
+        assert_eq!(eod_back_date(date(2026, 10, 26), time(6, 59)), date(2026, 10, 26));
+        // Friday 12:30am is a day off, so it rolls to Monday
+        assert_eq!(eod_back_date(date(2026, 10, 30), time(0, 30)), date(2026, 11, 2));
     }
 
     #[test]
