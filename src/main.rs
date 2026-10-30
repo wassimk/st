@@ -278,7 +278,7 @@ const STATUSES: &[Status] = &[
     Status {
         keyword: "pairing",
         slack_text: "In a pairing session",
-        slack_emoji: ":tuple:",
+        slack_emoji: ":pair:",
         slack_dnd: false,
         github_busy: false,
         out_of_office: false,
