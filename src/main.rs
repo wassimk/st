@@ -282,7 +282,7 @@ const STATUSES: &[Status] = &[
     },
     Status {
         keyword: "vacation",
-        slack_text: "Vacation",
+        slack_text: "Off recharging",
         slack_emoji: ":desert_island:",
         slack_dnd: true,
         github_busy: true,
@@ -497,7 +497,7 @@ Keywords:
   meeting   In a meeting
   pairing   In a pairing session
   eod       Outside work hours with DND until 7am the next work day (Mon-Thu)
-  vacation  Vacation with DND, GitHub busy, and a Linear out-of-office reminder
+  vacation  Off recharging with DND, GitHub busy, and a Linear out-of-office reminder
   sick      Out sick with DND, GitHub busy, and a Linear out-of-office reminder
   away      Out of office with DND, GitHub busy, and a Linear out-of-office reminder
   back      Catching up for 15 minutes, ends DND, and clears GitHub busy
