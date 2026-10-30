@@ -515,21 +515,48 @@ struct SlackResponse {
 
 // --- CLI ---
 
+const AFTER_HELP: &str = "\
+Keywords:
+  lunch     Lunchin' with DND for about an hour, or until a time (st lunch 1:30pm)
+  zoom      In a meeting (Zoom)
+  tuple     Pairing (Tuple)
+  meet      In a meeting
+  eod       Outside work hours with DND until 7am the next work day (Mon-Thu)
+  vacation  Vacation with DND, GitHub busy, and a Linear out-of-office reminder
+  sick      Out sick with DND and a Linear out-of-office reminder
+  away      Out of office with DND, GitHub busy, and a Linear out-of-office reminder
+  back      Catching up for 5 minutes, ends DND, and clears GitHub busy
+  clear     Clears Slack and GitHub status and ends DND
+
+Examples:
+  st lunch              DND until the next quarter hour plus 1 hour
+  st lunch 1:30pm       DND until 1:30pm
+  st eod                DND until 7am the next work day
+  st vacation friday    Vacation until Friday at 7am
+  st vacation 3/10 9am  Vacation until March 10 at 9am
+  st sick tomorrow      Out sick until tomorrow at 7am
+  st back               Clear DND and show Catching up for 5 minutes
+  st clear              Clear everything
+
+Dates: friday, mon, tomorrow, 3/10, 3-10-2026, 3/10/26, 2026-03-10
+Times: 9am, 1:30pm, 15:00, 3p.m. (defaults to 7am)";
+
 #[derive(Parser)]
 #[command(
     name = "st",
-    about = "Set your status across services",
+    about = "Set your status across Slack and GitHub, with reminders for Linear",
     version,
-    arg_required_else_help = true
+    arg_required_else_help = true,
+    after_help = AFTER_HELP
 )]
 struct Cli {
-    /// Status keyword: lunch, zoom, tuple, meet, eod, vacation, sick, away, back, clear
+    /// Status to set (see Keywords below)
     keyword: String,
 
-    /// Back date: when you'll return (e.g., friday, 2/28, 2026-03-10, tomorrow)
+    /// When you'll be back (see Dates below)
     back_date: Option<String>,
 
-    /// Back time: what time you'll return (e.g., 8am, 9:30am, 15:00). Defaults to 7am.
+    /// What time you'll be back (see Times below)
     back_time: Option<String>,
 }
 
