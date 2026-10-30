@@ -285,7 +285,7 @@ const STATUSES: &[Status] = &[
         out_of_office: false,
     },
     Status {
-        keyword: "meet",
+        keyword: "meeting",
         slack_text: "In a meeting",
         slack_emoji: ":virtual-meeting:",
         slack_dnd: false,
@@ -520,7 +520,7 @@ struct SlackResponse {
 const AFTER_HELP: &str = "\
 Keywords:
   lunch     Fork and knife emoji with DND for about an hour, or until a time (st lunch 1:30pm)
-  meet      In a meeting (or: st meeting)
+  meeting   In a meeting
   pairing   In a pairing session
   eod       Outside work hours with DND until 7am the next work day (Mon-Thu)
   vacation  Vacation with DND, GitHub busy, and a Linear out-of-office reminder
@@ -564,15 +564,12 @@ struct Cli {
 fn main() {
     let cli = Cli::parse();
     let config = load_config();
-    let keyword = match cli.keyword.to_lowercase().as_str() {
-        "meeting" => "meet".to_string(),
-        other => other.to_string(),
-    };
+    let keyword = cli.keyword.to_lowercase();
     let is_clear = keyword == "clear";
 
     if !is_clear && find_status(&keyword).is_none() {
         eprintln!(
-            "Unknown keyword: {keyword}\nAvailable: lunch, meet, pairing, eod, vacation, sick, away, back, clear"
+            "Unknown keyword: {keyword}\nAvailable: lunch, meeting, pairing, eod, vacation, sick, away, back, clear"
         );
         std::process::exit(1);
     }
