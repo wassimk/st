@@ -517,6 +517,7 @@ Examples:
   st lunch              DND until the next quarter hour plus 1 hour
   st lunch 1:30pm       DND until 1:30pm
   st eod                DND until 7am the next work day
+  st meeting Standup    In a meeting, with Standup as the status text
   st vacation friday    Off until Monday at 7am, since Fridays are off
   st vacation 3/10 9am  Vacation until March 10 at 9am
   st vacation 3/10 9am At the beach
@@ -540,7 +541,7 @@ struct Cli {
     /// Status to set (see Keywords below)
     keyword: String,
 
-    /// When you'll be back (see Dates below)
+    /// When you'll be back (see Dates below). Anything else starts a custom message
     back_date: Option<String>,
 
     /// What time you'll be back (see Times below), then an optional custom message
@@ -558,6 +559,35 @@ fn split_time_and_message(extra: &[String]) -> (Option<String>, Option<String>) 
     (time, message)
 }
 
+#[derive(Debug, PartialEq)]
+struct Args {
+    date: Option<String>,
+    time: Option<String>,
+    message: Option<String>,
+}
+
+// Words after the keyword are [date] [time] [message], each optional. A first word that
+// isn't a date starts the message, except for out-of-office keywords, where a typo in the
+// date should be an error rather than a status that never ends.
+fn parse_args(keyword: &str, out_of_office: bool, words: &[String]) -> Args {
+    if keyword == "lunch" {
+        let (time, message) = split_time_and_message(words);
+        return Args { date: None, time, message };
+    }
+
+    match words.first() {
+        Some(first) if out_of_office || parse_back_date(first, None).is_ok() => {
+            let (time, message) = split_time_and_message(&words[1..]);
+            Args { date: Some(first.clone()), time, message }
+        }
+        _ => Args {
+            date: None,
+            time: None,
+            message: (!words.is_empty()).then(|| words.join(" ")),
+        },
+    }
+}
+
 fn main() {
     let cli = Cli::parse();
     let config = load_config();
@@ -571,31 +601,26 @@ fn main() {
         std::process::exit(1);
     }
 
-    // For lunch the second arg is already the time, so everything after it is the message
-    let (back_time, message) = if keyword == "lunch" {
-        (None, (!cli.extra.is_empty()).then(|| cli.extra.join(" ")))
-    } else {
-        split_time_and_message(&cli.extra)
-    };
+    let out_of_office = find_status(&keyword).is_some_and(|s| s.out_of_office);
+    let words: Vec<String> = cli.back_date.into_iter().chain(cli.extra).collect();
+    let args = parse_args(&keyword, out_of_office, &words);
 
     let back_dt = if keyword == "lunch" {
-        let time = cli.back_date.as_deref(); // for lunch, second arg is a time
-        Some(parse_lunch_back_time(time).unwrap_or_else(|e| {
+        Some(parse_lunch_back_time(args.time.as_deref()).unwrap_or_else(|e| {
             eprintln!("{e}");
             std::process::exit(1);
         }))
-    } else if keyword == "back" && cli.back_date.is_none() {
+    } else if keyword == "back" && args.date.is_none() {
         // "Catching up" is a short heads-up, so it expires on its own
         Some(Local::now() + chrono::Duration::minutes(CATCHING_UP_MINUTES))
-    } else if keyword == "eod" && cli.back_date.is_none() {
+    } else if keyword == "eod" && args.date.is_none() {
         // Pause until the start of the next work day, so Thursday's eod lasts the weekend
         let time = NaiveTime::from_hms_opt(DEFAULT_BACK_HOUR, 0, 0).unwrap();
         let now = Local::now();
         Some(to_local_datetime(eod_back_date(now.date_naive(), now.time()), time))
     } else {
-        let out_of_office = find_status(&keyword).is_some_and(|s| s.out_of_office);
-        cli.back_date.map(|s| {
-            let dt = parse_back_date(&s, back_time.as_deref()).unwrap_or_else(|e| {
+        args.date.as_deref().map(|s| {
+            let dt = parse_back_date(s, args.time.as_deref()).unwrap_or_else(|e| {
                 eprintln!("{e}");
                 std::process::exit(1);
             });
@@ -607,7 +632,7 @@ fn main() {
         run_clear();
     } else {
         let status = find_status(&keyword).unwrap();
-        let text = message.as_deref().unwrap_or(status.slack_text);
+        let text = args.message.as_deref().unwrap_or(status.slack_text);
         run_set(status, text, back_dt, &config);
     }
 }
@@ -828,6 +853,46 @@ mod tests {
             split_time_and_message(&["3 day weekend".to_string()]),
             (None, Some("3 day weekend".into()))
         );
+    }
+
+    fn args(date: Option<&str>, time: Option<&str>, message: Option<&str>) -> Args {
+        Args {
+            date: date.map(String::from),
+            time: time.map(String::from),
+            message: message.map(String::from),
+        }
+    }
+
+    #[test]
+    fn message_without_a_date() {
+        assert_eq!(parse_args("meeting", false, &words("Standup")), args(None, None, Some("Standup")));
+        assert_eq!(
+            parse_args("pairing", false, &words("with Jeremy")),
+            args(None, None, Some("with Jeremy"))
+        );
+        assert_eq!(parse_args("eod", false, &words("Kid pickup")), args(None, None, Some("Kid pickup")));
+        assert_eq!(parse_args("meeting", false, &[]), args(None, None, None));
+    }
+
+    #[test]
+    fn date_then_time_then_message() {
+        assert_eq!(
+            parse_args("vacation", true, &words("friday 9am At the beach")),
+            args(Some("friday"), Some("9am"), Some("At the beach"))
+        );
+        assert_eq!(parse_args("eod", false, &words("monday")), args(Some("monday"), None, None));
+    }
+
+    #[test]
+    fn out_of_office_keeps_a_bad_date_as_a_date_so_it_errors() {
+        assert_eq!(parse_args("vacation", true, &words("fridy")), args(Some("fridy"), None, None));
+    }
+
+    #[test]
+    fn lunch_takes_an_optional_time_then_message() {
+        assert_eq!(parse_args("lunch", false, &words("1pm Tacos")), args(None, Some("1pm"), Some("Tacos")));
+        assert_eq!(parse_args("lunch", false, &words("Tacos")), args(None, None, Some("Tacos")));
+        assert_eq!(parse_args("lunch", false, &words("1")), args(None, Some("1"), None));
     }
 
     #[test]

@@ -81,7 +81,16 @@ st clear              # Clear everything
 
 ### Custom Messages
 
-Anything after the date and optional time replaces the default status text in Slack and GitHub. For `lunch`, the message goes after the time. Quote a message that starts with a number, like `st vacation friday "3 day weekend"`, so the number isn't read as a time.
+Every keyword except `clear` takes an optional message that replaces the default status text in Slack and GitHub. Put it after the date and time, or skip the date entirely:
+
+```
+st meeting Standup
+st pairing with Jeremy
+st lunch 1pm Tacos
+st vacation 3/10 At the beach
+```
+
+For `vacation`, `sick`, and `away`, the first word must be a date if you give anything, so a typo like `fridy` is an error instead of a status with no end date. Quote a message that starts with a number, like `st vacation friday "3 day weekend"`, so the number isn't read as a time.
 
 ### Date Formats
 
