@@ -52,8 +52,8 @@ st <keyword> [back_date] [back_time]
 | Keyword | Slack | GitHub | Linear |
 |---|---|---|---|
 | `lunch` | :fork_and_knife: only + DND | — | — |
-| `meeting` | In a meeting | — | — |
-| `pairing` | In a pairing session | — | — |
+| `meeting` | In a meeting, optionally until a time | — | — |
+| `pairing` | In a pairing session, optionally until a time | — | — |
 | `eod` | Outside work hours + DND until next work day 7am | — | — |
 | `vacation` | Off recharging + DND | Busy (org-scoped) | Reminds to add Google Calendar OOO |
 | `sick` | Out sick + DND | Busy (org-scoped) | Reminds to add Google Calendar OOO |
@@ -85,6 +85,7 @@ Every keyword except `clear` takes an optional message that replaces the default
 
 ```
 st meeting Standup
+st meeting 3pm Standup
 st pairing with Jeremy
 st lunch 1pm Tacos
 st vacation 3/10 At the beach

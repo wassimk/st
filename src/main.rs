@@ -218,8 +218,8 @@ fn next_workday(today: NaiveDate) -> NaiveDate {
     date
 }
 
-// Without am/pm, "1" means whichever 1 o'clock comes next, so lunch at 1 is 1pm
-fn parse_lunch_time(input: &str, now: NaiveTime) -> Result<NaiveTime> {
+// Without am/pm, "1" means whichever 1 o'clock comes next, so "lunch 1" is 1pm
+fn parse_today_time(input: &str, now: NaiveTime) -> Result<NaiveTime> {
     let time = parse_time(Some(input))?;
     let has_meridiem = input.chars().any(|c| c.is_ascii_alphabetic());
     if !has_meridiem && time.hour() < 12 && time <= now {
@@ -228,10 +228,10 @@ fn parse_lunch_time(input: &str, now: NaiveTime) -> Result<NaiveTime> {
     Ok(time)
 }
 
-fn parse_lunch_back_time(input: Option<&str>) -> Result<DateTime<Local>> {
+fn parse_today_back_time(input: Option<&str>) -> Result<DateTime<Local>> {
     let today = Local::now().date_naive();
     let time = match input {
-        Some(s) => parse_lunch_time(s, Local::now().time())?,
+        Some(s) => parse_today_time(s, Local::now().time())?,
         None => {
             // Next quarter hour + 1 hour
             let now = Local::now();
@@ -504,8 +504,8 @@ struct SlackResponse {
 const AFTER_HELP: &str = "\
 Keywords:
   lunch     Fork and knife emoji with DND for about an hour, or until a time (st lunch 1:30pm)
-  meeting   In a meeting
-  pairing   In a pairing session
+  meeting   In a meeting, optionally until a time (st meeting 3pm)
+  pairing   In a pairing session, optionally until a time (st pairing 3pm)
   eod       Outside work hours with DND until 7am the next work day (Mon-Thu)
   vacation  Off recharging with DND, GitHub busy, and a Linear out-of-office reminder
   sick      Out sick with DND, GitHub busy, and a Linear out-of-office reminder
@@ -518,6 +518,7 @@ Examples:
   st lunch 1:30pm       DND until 1:30pm
   st eod                DND until 7am the next work day
   st meeting Standup    In a meeting, with Standup as the status text
+  st meeting 3pm        In a meeting until 3pm
   st vacation friday    Off until Monday at 7am, since Fridays are off
   st vacation 3/10 9am  Vacation until March 10 at 9am
   st vacation 3/10 9am At the beach
@@ -575,8 +576,18 @@ fn parse_args(keyword: &str, out_of_office: bool, words: &[String]) -> Args {
         return Args { date: None, time, message };
     }
 
+    let takes_bare_time = matches!(keyword, "meeting" | "pairing" | "away");
+
     match words.first() {
-        Some(first) if out_of_office || parse_back_date(first, None).is_ok() => {
+        Some(first) if parse_back_date(first, None).is_ok() => {
+            let (time, message) = split_time_and_message(&words[1..]);
+            Args { date: Some(first.clone()), time, message }
+        }
+        Some(first) if takes_bare_time && parse_time(Some(first)).is_ok() => {
+            let (time, message) = split_time_and_message(words);
+            Args { date: None, time, message }
+        }
+        Some(first) if out_of_office => {
             let (time, message) = split_time_and_message(&words[1..]);
             Args { date: Some(first.clone()), time, message }
         }
@@ -605,8 +616,9 @@ fn main() {
     let words: Vec<String> = cli.back_date.into_iter().chain(cli.extra).collect();
     let args = parse_args(&keyword, out_of_office, &words);
 
-    let back_dt = if keyword == "lunch" {
-        Some(parse_lunch_back_time(args.time.as_deref()).unwrap_or_else(|e| {
+    // A time with no date means later today, read the same way as a lunch time
+    let back_dt = if keyword == "lunch" || (args.date.is_none() && args.time.is_some()) {
+        Some(parse_today_back_time(args.time.as_deref()).unwrap_or_else(|e| {
             eprintln!("{e}");
             std::process::exit(1);
         }))
@@ -816,20 +828,20 @@ mod tests {
     }
 
     #[test]
-    fn lunch_time_without_am_pm_picks_the_next_one() {
+    fn today_time_without_am_pm_picks_the_next_one() {
         let morning = time(9, 20);
-        assert_eq!(parse_lunch_time("1", morning).unwrap(), time(13, 0));
-        assert_eq!(parse_lunch_time("12:30", morning).unwrap(), time(12, 30));
-        assert_eq!(parse_lunch_time("11", morning).unwrap(), time(11, 0));
-        assert_eq!(parse_lunch_time("9:15", morning).unwrap(), time(21, 15));
+        assert_eq!(parse_today_time("1", morning).unwrap(), time(13, 0));
+        assert_eq!(parse_today_time("12:30", morning).unwrap(), time(12, 30));
+        assert_eq!(parse_today_time("11", morning).unwrap(), time(11, 0));
+        assert_eq!(parse_today_time("9:15", morning).unwrap(), time(21, 15));
     }
 
     #[test]
-    fn lunch_time_with_am_pm_or_24_hour_is_kept() {
+    fn today_time_with_am_pm_or_24_hour_is_kept() {
         let morning = time(9, 20);
-        assert_eq!(parse_lunch_time("1am", morning).unwrap(), time(1, 0));
-        assert_eq!(parse_lunch_time("1pm", morning).unwrap(), time(13, 0));
-        assert_eq!(parse_lunch_time("13:00", morning).unwrap(), time(13, 0));
+        assert_eq!(parse_today_time("1am", morning).unwrap(), time(1, 0));
+        assert_eq!(parse_today_time("1pm", morning).unwrap(), time(13, 0));
+        assert_eq!(parse_today_time("13:00", morning).unwrap(), time(13, 0));
     }
 
     fn words(s: &str) -> Vec<String> {
@@ -886,6 +898,20 @@ mod tests {
     #[test]
     fn out_of_office_keeps_a_bad_date_as_a_date_so_it_errors() {
         assert_eq!(parse_args("vacation", true, &words("fridy")), args(Some("fridy"), None, None));
+    }
+
+    #[test]
+    fn meeting_pairing_and_away_take_a_time_without_a_date() {
+        assert_eq!(parse_args("meeting", false, &words("3pm")), args(None, Some("3pm"), None));
+        assert_eq!(
+            parse_args("pairing", false, &words("3pm with Jeremy")),
+            args(None, Some("3pm"), Some("with Jeremy"))
+        );
+        assert_eq!(parse_args("away", true, &words("3pm")), args(None, Some("3pm"), None));
+        // A date still comes first when given
+        assert_eq!(parse_args("away", true, &words("friday")), args(Some("friday"), None, None));
+        // eod doesn't take a bare time, so it's a message
+        assert_eq!(parse_args("eod", false, &words("3pm")), args(None, None, Some("3pm")));
     }
 
     #[test]
