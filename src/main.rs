@@ -277,14 +277,6 @@ const STATUSES: &[Status] = &[
         out_of_office: false,
     },
     Status {
-        keyword: "zoom",
-        slack_text: "In a meeting (Zoom)",
-        slack_emoji: ":video_camera:",
-        slack_dnd: false,
-        github_busy: false,
-        out_of_office: false,
-    },
-    Status {
         keyword: "tuple",
         slack_text: "Pairing (Tuple)",
         slack_emoji: ":couple:",
@@ -295,7 +287,7 @@ const STATUSES: &[Status] = &[
     Status {
         keyword: "meet",
         slack_text: "In a meeting",
-        slack_emoji: ":calendar:",
+        slack_emoji: ":virtual-meeting:",
         slack_dnd: false,
         github_busy: false,
         out_of_office: false,
@@ -528,9 +520,8 @@ struct SlackResponse {
 const AFTER_HELP: &str = "\
 Keywords:
   lunch     Fork and knife emoji with DND for about an hour, or until a time (st lunch 1:30pm)
-  zoom      In a meeting (Zoom)
+  meet      In a meeting (or: st meeting)
   tuple     Pairing (Tuple)
-  meet      In a meeting
   eod       Outside work hours with DND until 7am the next work day (Mon-Thu)
   vacation  Vacation with DND, GitHub busy, and a Linear out-of-office reminder
   sick      Out sick with DND and a Linear out-of-office reminder
@@ -573,12 +564,15 @@ struct Cli {
 fn main() {
     let cli = Cli::parse();
     let config = load_config();
-    let keyword = cli.keyword.to_lowercase();
+    let keyword = match cli.keyword.to_lowercase().as_str() {
+        "meeting" => "meet".to_string(),
+        other => other.to_string(),
+    };
     let is_clear = keyword == "clear";
 
     if !is_clear && find_status(&keyword).is_none() {
         eprintln!(
-            "Unknown keyword: {keyword}\nAvailable: lunch, zoom, tuple, meet, eod, vacation, sick, away, back, clear"
+            "Unknown keyword: {keyword}\nAvailable: lunch, meet, tuple, eod, vacation, sick, away, back, clear"
         );
         std::process::exit(1);
     }
