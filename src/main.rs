@@ -5,6 +5,7 @@ use serde::Deserialize;
 use std::path::PathBuf;
 
 const DEFAULT_BACK_HOUR: u32 = 7;
+const END_OF_DAY_HOUR: u32 = 17;
 const CATCHING_UP_MINUTES: i64 = 15;
 const LINEAR_OOO_REMINDER: &str =
     "Add an out-of-office event in Google Calendar (Linear shows you as Away)";
@@ -161,31 +162,6 @@ fn to_local_datetime(date: NaiveDate, time: NaiveTime) -> DateTime<Local> {
         .unwrap()
 }
 
-fn format_back_date(dt: DateTime<Local>) -> String {
-    let today = Local::now().date_naive();
-    let date = dt.date_naive();
-    let days_away = (date - today).num_days();
-
-    if days_away <= 7 {
-        format!("Back {}.", date.format("%A"))
-    } else {
-        format!("Back {}/{}.", date.month(), date.day())
-    }
-}
-
-fn format_back_date_with_time(dt: DateTime<Local>) -> String {
-    let today = Local::now().date_naive();
-    let date = dt.date_naive();
-    let days_away = (date - today).num_days();
-    let time = format_time(dt);
-
-    if days_away <= 7 {
-        format!("Back {} {}.", date.format("%A"), time)
-    } else {
-        format!("Back {}/{} {}.", date.month(), date.day(), time)
-    }
-}
-
 fn format_time(dt: DateTime<Local>) -> String {
     let hour = dt.format("%I").to_string().trim_start_matches('0').to_string();
     let minute = dt.minute();
@@ -199,16 +175,39 @@ fn format_time(dt: DateTime<Local>) -> String {
 }
 
 fn format_until(dt: DateTime<Local>, today: NaiveDate) -> String {
-    if dt.date_naive() == today {
+    let date = dt.date_naive();
+    let days_away = (date - today).num_days();
+
+    if days_away == 0 {
         format_time(dt)
-    } else {
+    } else if days_away < 7 {
         format!("{} {}", dt.format("%A"), format_time(dt))
+    } else {
+        format!("{} {}/{} {}", dt.format("%a"), date.month(), date.day(), format_time(dt))
     }
 }
 
 // Four-day work week: Monday through Thursday
 fn is_workday(date: NaiveDate) -> bool {
     !matches!(date.weekday(), Weekday::Fri | Weekday::Sat | Weekday::Sun)
+}
+
+// Being back on a day off means being back the next work day, at the same time
+fn roll_to_workday(dt: DateTime<Local>) -> DateTime<Local> {
+    let mut date = dt.date_naive();
+    while !is_workday(date) {
+        date += chrono::Duration::days(1);
+    }
+    to_local_datetime(date, dt.time())
+}
+
+// Away with no date lasts the rest of the work day, or all of the next one after hours
+fn away_back_date(today: NaiveDate, now: NaiveTime) -> NaiveDate {
+    if is_workday(today) && now.hour() < END_OF_DAY_HOUR {
+        today
+    } else {
+        next_workday(today)
+    }
 }
 
 // Before the back hour on a workday you're still finishing the night before,
@@ -229,8 +228,8 @@ fn next_workday(today: NaiveDate) -> NaiveDate {
     date
 }
 
-// Without am/pm, "1" means whichever 1 o'clock comes next, so lunch at 1 is 1pm
-fn parse_lunch_time(input: &str, now: NaiveTime) -> Result<NaiveTime> {
+// Without am/pm, "1" means whichever 1 o'clock comes next, so "lunch 1" is 1pm
+fn parse_today_time(input: &str, now: NaiveTime) -> Result<NaiveTime> {
     let time = parse_time(Some(input))?;
     let has_meridiem = input.chars().any(|c| c.is_ascii_alphabetic());
     if !has_meridiem && time.hour() < 12 && time <= now {
@@ -239,10 +238,10 @@ fn parse_lunch_time(input: &str, now: NaiveTime) -> Result<NaiveTime> {
     Ok(time)
 }
 
-fn parse_lunch_back_time(input: Option<&str>) -> Result<DateTime<Local>> {
+fn parse_today_back_time(input: Option<&str>) -> Result<DateTime<Local>> {
     let today = Local::now().date_naive();
     let time = match input {
-        Some(s) => parse_lunch_time(s, Local::now().time())?,
+        Some(s) => parse_today_time(s, Local::now().time())?,
         None => {
             // Next quarter hour + 1 hour
             let now = Local::now();
@@ -302,7 +301,7 @@ const STATUSES: &[Status] = &[
     },
     Status {
         keyword: "vacation",
-        slack_text: "Vacation",
+        slack_text: "Off recharging",
         slack_emoji: ":desert_island:",
         slack_dnd: true,
         github_busy: true,
@@ -318,7 +317,7 @@ const STATUSES: &[Status] = &[
     },
     Status {
         keyword: "away",
-        slack_text: "Out of office",
+        slack_text: "Away for a bit",
         slack_emoji: ":no_entry:",
         slack_dnd: true,
         github_busy: true,
@@ -357,6 +356,7 @@ fn github_graphql(token: &str, body: &serde_json::Value) -> Result<serde_json::V
 
 fn set_github_status(
     status: &Status,
+    text: &str,
     back_date: Option<DateTime<Local>>,
     org_id: Option<&str>,
 ) -> Result<()> {
@@ -366,9 +366,11 @@ fn set_github_status(
         return Ok(());
     }
 
+    // A JSON string is also a valid GraphQL string, so quotes in a custom message are escaped
     let mut input = format!(
-        "message: \"{}\", emoji: \"{}\", limitedAvailability: true",
-        status.slack_text, status.slack_emoji,
+        "message: {}, emoji: \"{}\", limitedAvailability: true",
+        serde_json::to_string(text)?,
+        status.slack_emoji,
     );
 
     if let Some(dt) = back_date {
@@ -403,17 +405,9 @@ fn clear_github_status() -> Result<()> {
 
 // --- Slack integration ---
 
-fn set_slack_status(
-    status: &Status,
-    back_date: Option<DateTime<Local>>,
-    show_back_in_text: bool,
-) -> Result<()> {
+// Slack shows the expiration under the status, so the text doesn't repeat it
+fn set_slack_status(status: &Status, text: &str, back_date: Option<DateTime<Local>>) -> Result<()> {
     let token = std::env::var("SLACK_PAT").context("SLACK_PAT not set")?;
-
-    let text = match (back_date, show_back_in_text) {
-        (Some(dt), true) => format!("{}. {}", status.slack_text, format_back_date(dt)),
-        _ => status.slack_text.to_string(),
-    };
 
     let expiration = match back_date {
         Some(dt) => dt.timestamp(),
@@ -520,12 +514,13 @@ struct SlackResponse {
 const AFTER_HELP: &str = "\
 Keywords:
   lunch     Fork and knife emoji with DND for about an hour, or until a time (st lunch 1:30pm)
-  meeting   In a meeting
-  pairing   In a pairing session
+  meeting   In a meeting, optionally until a time (st meeting 3pm)
+  pairing   In a pairing session, optionally until a time (st pairing 3pm)
   eod       Outside work hours with DND until 7am the next work day (Mon-Thu)
-  vacation  Vacation with DND, GitHub busy, and a Linear out-of-office reminder
+  vacation  Off recharging with DND, GitHub busy, and a Linear out-of-office reminder
   sick      Out sick with DND, GitHub busy, and a Linear out-of-office reminder
-  away      Out of office with DND, GitHub busy, and a Linear out-of-office reminder
+  away      Away for a bit until 5pm (or a time you give) with DND, GitHub busy, and a
+            Linear out-of-office reminder
   back      Catching up for 15 minutes, ends DND, and clears GitHub busy
   clear     Clears Slack and GitHub status and ends DND
 
@@ -533,8 +528,12 @@ Examples:
   st lunch              DND until the next quarter hour plus 1 hour
   st lunch 1:30pm       DND until 1:30pm
   st eod                DND until 7am the next work day
-  st vacation friday    Vacation until Friday at 7am
+  st meeting Standup    In a meeting, with Standup as the status text
+  st meeting 3pm        In a meeting until 3pm
+  st vacation friday    Off until Monday at 7am, since Fridays are off
   st vacation 3/10 9am  Vacation until March 10 at 9am
+  st vacation 3/10 9am At the beach
+                        Same, with a custom message
   st sick tomorrow      Out sick until tomorrow at 7am
   st back               Clear DND and show Catching up for 15 minutes
   st clear              Clear everything
@@ -554,11 +553,63 @@ struct Cli {
     /// Status to set (see Keywords below)
     keyword: String,
 
-    /// When you'll be back (see Dates below)
+    /// When you'll be back (see Dates below). Anything else starts a custom message
     back_date: Option<String>,
 
-    /// What time you'll be back (see Times below)
-    back_time: Option<String>,
+    /// What time you'll be back (see Times below), then an optional custom message
+    #[arg(value_name = "BACK_TIME] [MESSAGE", trailing_var_arg = true)]
+    extra: Vec<String>,
+}
+
+// The word after the date is a time only if it parses as one; the rest is the message
+fn split_time_and_message(extra: &[String]) -> (Option<String>, Option<String>) {
+    let (time, words) = match extra.first() {
+        Some(first) if parse_time(Some(first)).is_ok() => (Some(first.clone()), &extra[1..]),
+        _ => (None, extra),
+    };
+    let message = (!words.is_empty()).then(|| words.join(" "));
+    (time, message)
+}
+
+#[derive(Debug, PartialEq)]
+struct Args {
+    date: Option<String>,
+    time: Option<String>,
+    message: Option<String>,
+}
+
+// Words after the keyword are [date] [time] [message], each optional. A first word that
+// isn't a date starts the message, except for vacation and sick, which have no default end,
+// so a typo in the date should be an error rather than a status that never ends.
+fn parse_args(keyword: &str, words: &[String]) -> Args {
+    let date_required = matches!(keyword, "vacation" | "sick");
+
+    if keyword == "lunch" {
+        let (time, message) = split_time_and_message(words);
+        return Args { date: None, time, message };
+    }
+
+    let takes_bare_time = matches!(keyword, "meeting" | "pairing" | "away");
+
+    match words.first() {
+        Some(first) if parse_back_date(first, None).is_ok() => {
+            let (time, message) = split_time_and_message(&words[1..]);
+            Args { date: Some(first.clone()), time, message }
+        }
+        Some(first) if takes_bare_time && parse_time(Some(first)).is_ok() => {
+            let (time, message) = split_time_and_message(words);
+            Args { date: None, time, message }
+        }
+        Some(first) if date_required => {
+            let (time, message) = split_time_and_message(&words[1..]);
+            Args { date: Some(first.clone()), time, message }
+        }
+        _ => Args {
+            date: None,
+            time: None,
+            message: (!words.is_empty()).then(|| words.join(" ")),
+        },
+    }
 }
 
 fn main() {
@@ -574,26 +625,35 @@ fn main() {
         std::process::exit(1);
     }
 
-    let back_dt = if keyword == "lunch" {
-        let time = cli.back_date.as_deref(); // for lunch, second arg is a time
-        Some(parse_lunch_back_time(time).unwrap_or_else(|e| {
+    let out_of_office = find_status(&keyword).is_some_and(|s| s.out_of_office);
+    let words: Vec<String> = cli.back_date.into_iter().chain(cli.extra).collect();
+    let args = parse_args(&keyword, &words);
+
+    // A time with no date means later today, read the same way as a lunch time
+    let back_dt = if keyword == "lunch" || (args.date.is_none() && args.time.is_some()) {
+        Some(parse_today_back_time(args.time.as_deref()).unwrap_or_else(|e| {
             eprintln!("{e}");
             std::process::exit(1);
         }))
-    } else if keyword == "back" && cli.back_date.is_none() {
+    } else if keyword == "back" && args.date.is_none() {
         // "Catching up" is a short heads-up, so it expires on its own
         Some(Local::now() + chrono::Duration::minutes(CATCHING_UP_MINUTES))
-    } else if keyword == "eod" && cli.back_date.is_none() {
+    } else if keyword == "eod" && args.date.is_none() {
         // Pause until the start of the next work day, so Thursday's eod lasts the weekend
         let time = NaiveTime::from_hms_opt(DEFAULT_BACK_HOUR, 0, 0).unwrap();
         let now = Local::now();
         Some(to_local_datetime(eod_back_date(now.date_naive(), now.time()), time))
+    } else if keyword == "away" && args.date.is_none() {
+        let time = NaiveTime::from_hms_opt(END_OF_DAY_HOUR, 0, 0).unwrap();
+        let now = Local::now();
+        Some(to_local_datetime(away_back_date(now.date_naive(), now.time()), time))
     } else {
-        cli.back_date.map(|s| {
-            parse_back_date(&s, cli.back_time.as_deref()).unwrap_or_else(|e| {
+        args.date.as_deref().map(|s| {
+            let dt = parse_back_date(s, args.time.as_deref()).unwrap_or_else(|e| {
                 eprintln!("{e}");
                 std::process::exit(1);
-            })
+            });
+            if out_of_office { roll_to_workday(dt) } else { dt }
         })
     };
 
@@ -601,11 +661,12 @@ fn main() {
         run_clear();
     } else {
         let status = find_status(&keyword).unwrap();
-        run_set(status, back_dt, &config);
+        let text = args.message.as_deref().unwrap_or(status.slack_text);
+        run_set(status, text, back_dt, &config);
     }
 }
 
-fn run_set(status: &Status, back_date: Option<DateTime<Local>>, config: &Config) {
+fn run_set(status: &Status, text: &str, back_date: Option<DateTime<Local>>, config: &Config) {
     let is_back = status.keyword == "back";
 
     // Slack (always runs — "back" clears DND then sets catching-up status)
@@ -615,13 +676,8 @@ fn run_set(status: &Status, back_date: Option<DateTime<Local>>, config: &Config)
     {
         eprintln!("  Slack   \u{2717} ending DND: {e}");
     }
-    let show_back_in_text = matches!(status.keyword, "vacation" | "sick" | "away");
-    match set_slack_status(status, back_date, show_back_in_text) {
+    match set_slack_status(status, text, back_date) {
         Ok(()) => {
-            let text = match (back_date, show_back_in_text) {
-                (Some(dt), true) => format!("{}. {}", status.slack_text, format_back_date_with_time(dt)),
-                _ => status.slack_text.to_string(),
-            };
             let dnd_detail = match (status.slack_dnd, back_date) {
                 (true, Some(dt)) => {
                     format!(" (DND until {})", format_until(dt, Local::now().date_naive()))
@@ -647,7 +703,7 @@ fn run_set(status: &Status, back_date: Option<DateTime<Local>>, config: &Config)
             Err(e) => eprintln!("  GitHub  \u{2717} {e}"),
         }
     } else if status.github_busy {
-        match set_github_status(status, back_date, config.github_org_id.as_deref()) {
+        match set_github_status(status, text, back_date, config.github_org_id.as_deref()) {
             Ok(()) => {
                 let org = match (&config.github_org_id, &config.github_org_name) {
                     (Some(_), Some(name)) => format!(" ({name} only)"),
@@ -752,6 +808,16 @@ mod tests {
     }
 
     #[test]
+    fn return_dates_on_days_off_move_to_monday() {
+        let at = |d: NaiveDate, h: u32| to_local_datetime(d, time(h, 0));
+        // Friday 11/20 at 9am becomes Monday 11/23 at 9am
+        assert_eq!(roll_to_workday(at(date(2026, 11, 20), 9)), at(date(2026, 11, 23), 9));
+        assert_eq!(roll_to_workday(at(date(2026, 11, 22), 7)), at(date(2026, 11, 23), 7));
+        // Thursday stays Thursday
+        assert_eq!(roll_to_workday(at(date(2026, 11, 19), 7)), at(date(2026, 11, 19), 7));
+    }
+
+    #[test]
     fn next_workday_skips_fridays_and_weekends() {
         // 2026-10-26 is a Monday
         assert_eq!(next_workday(date(2026, 10, 26)), date(2026, 10, 27));
@@ -760,6 +826,16 @@ mod tests {
         assert_eq!(next_workday(date(2026, 10, 30)), date(2026, 11, 2));
         assert_eq!(next_workday(date(2026, 10, 31)), date(2026, 11, 2));
         assert_eq!(next_workday(date(2026, 11, 1)), date(2026, 11, 2));
+    }
+
+    #[test]
+    fn away_ends_at_the_end_of_the_work_day() {
+        // Wednesday 1pm ends Wednesday, Wednesday 8pm ends Thursday
+        assert_eq!(away_back_date(date(2026, 10, 28), time(13, 0)), date(2026, 10, 28));
+        assert_eq!(away_back_date(date(2026, 10, 28), time(20, 0)), date(2026, 10, 29));
+        // Thursday 8pm and any time Friday end Monday
+        assert_eq!(away_back_date(date(2026, 10, 29), time(20, 0)), date(2026, 11, 2));
+        assert_eq!(away_back_date(date(2026, 10, 30), time(10, 0)), date(2026, 11, 2));
     }
 
     #[test]
@@ -779,20 +855,103 @@ mod tests {
     }
 
     #[test]
-    fn lunch_time_without_am_pm_picks_the_next_one() {
+    fn today_time_without_am_pm_picks_the_next_one() {
         let morning = time(9, 20);
-        assert_eq!(parse_lunch_time("1", morning).unwrap(), time(13, 0));
-        assert_eq!(parse_lunch_time("12:30", morning).unwrap(), time(12, 30));
-        assert_eq!(parse_lunch_time("11", morning).unwrap(), time(11, 0));
-        assert_eq!(parse_lunch_time("9:15", morning).unwrap(), time(21, 15));
+        assert_eq!(parse_today_time("1", morning).unwrap(), time(13, 0));
+        assert_eq!(parse_today_time("12:30", morning).unwrap(), time(12, 30));
+        assert_eq!(parse_today_time("11", morning).unwrap(), time(11, 0));
+        assert_eq!(parse_today_time("9:15", morning).unwrap(), time(21, 15));
     }
 
     #[test]
-    fn lunch_time_with_am_pm_or_24_hour_is_kept() {
+    fn today_time_with_am_pm_or_24_hour_is_kept() {
         let morning = time(9, 20);
-        assert_eq!(parse_lunch_time("1am", morning).unwrap(), time(1, 0));
-        assert_eq!(parse_lunch_time("1pm", morning).unwrap(), time(13, 0));
-        assert_eq!(parse_lunch_time("13:00", morning).unwrap(), time(13, 0));
+        assert_eq!(parse_today_time("1am", morning).unwrap(), time(1, 0));
+        assert_eq!(parse_today_time("1pm", morning).unwrap(), time(13, 0));
+        assert_eq!(parse_today_time("13:00", morning).unwrap(), time(13, 0));
+    }
+
+    fn words(s: &str) -> Vec<String> {
+        s.split_whitespace().map(String::from).collect()
+    }
+
+    #[test]
+    fn extra_args_split_into_time_and_message() {
+        assert_eq!(split_time_and_message(&[]), (None, None));
+        assert_eq!(split_time_and_message(&words("9am")), (Some("9am".into()), None));
+        assert_eq!(
+            split_time_and_message(&words("9am At the beach")),
+            (Some("9am".into()), Some("At the beach".into()))
+        );
+        assert_eq!(
+            split_time_and_message(&words("At the beach")),
+            (None, Some("At the beach".into()))
+        );
+        // A quoted message that starts with a number is still a message
+        assert_eq!(
+            split_time_and_message(&["3 day weekend".to_string()]),
+            (None, Some("3 day weekend".into()))
+        );
+    }
+
+    fn args(date: Option<&str>, time: Option<&str>, message: Option<&str>) -> Args {
+        Args {
+            date: date.map(String::from),
+            time: time.map(String::from),
+            message: message.map(String::from),
+        }
+    }
+
+    #[test]
+    fn message_without_a_date() {
+        assert_eq!(parse_args("meeting", &words("Standup")), args(None, None, Some("Standup")));
+        assert_eq!(
+            parse_args("pairing", &words("with Jeremy")),
+            args(None, None, Some("with Jeremy"))
+        );
+        assert_eq!(parse_args("eod", &words("Kid pickup")), args(None, None, Some("Kid pickup")));
+        assert_eq!(parse_args("meeting", &[]), args(None, None, None));
+    }
+
+    #[test]
+    fn date_then_time_then_message() {
+        assert_eq!(
+            parse_args("vacation", &words("friday 9am At the beach")),
+            args(Some("friday"), Some("9am"), Some("At the beach"))
+        );
+        assert_eq!(parse_args("eod", &words("monday")), args(Some("monday"), None, None));
+    }
+
+    #[test]
+    fn vacation_and_sick_keep_a_bad_date_as_a_date_so_it_errors() {
+        assert_eq!(parse_args("vacation", &words("fridy")), args(Some("fridy"), None, None));
+        assert_eq!(parse_args("sick", &words("tomorow")), args(Some("tomorow"), None, None));
+    }
+
+    #[test]
+    fn away_takes_a_message_without_a_date() {
+        assert_eq!(parse_args("away", &words("Doctor appointment")), args(None, None, Some("Doctor appointment")));
+    }
+
+    #[test]
+    fn meeting_pairing_and_away_take_a_time_without_a_date() {
+        assert_eq!(parse_args("meeting", &words("3pm")), args(None, Some("3pm"), None));
+        assert_eq!(
+            parse_args("pairing", &words("3pm with Jeremy")),
+            args(None, Some("3pm"), Some("with Jeremy"))
+        );
+        assert_eq!(parse_args("away", &words("3pm")), args(None, Some("3pm"), None));
+        // A date still comes first when given
+        assert_eq!(parse_args("away", &words("friday")), args(Some("friday"), None, None));
+        // eod doesn't take a bare time, so it's a message
+        assert_eq!(parse_args("eod", &words("3pm")), args(None, None, Some("3pm")));
+    }
+
+    #[test]
+    fn lunch_takes_an_optional_time_then_message() {
+        assert_eq!(parse_args("lunch", &words("1pm Tacos")), args(None, Some("1pm"), Some("Tacos")));
+        assert_eq!(parse_args("lunch", &words("Tacos")), args(None, None, Some("Tacos")));
+        assert_eq!(parse_args("lunch", &words("1")), args(None, Some("1"), None));
     }
 
     #[test]
@@ -802,6 +961,15 @@ mod tests {
         let monday_7am = to_local_datetime(date(2026, 11, 2), time(7, 0));
         assert_eq!(format_until(today_1pm, friday), "1pm");
         assert_eq!(format_until(monday_7am, friday), "Monday 7am");
+    }
+
+    #[test]
+    fn dnd_until_includes_date_when_a_week_or_more_away() {
+        let friday = date(2026, 10, 30);
+        let next_friday_7am = to_local_datetime(date(2026, 11, 6), time(7, 0));
+        let nov_20_7am = to_local_datetime(date(2026, 11, 20), time(7, 0));
+        assert_eq!(format_until(next_friday_7am, friday), "Fri 11/6 7am");
+        assert_eq!(format_until(nov_20_7am, friday), "Fri 11/20 7am");
     }
 
     #[test]
