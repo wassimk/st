@@ -5,7 +5,7 @@ use serde::Deserialize;
 use std::path::PathBuf;
 
 const DEFAULT_BACK_HOUR: u32 = 7;
-const CATCHING_UP_MINUTES: i64 = 5;
+const CATCHING_UP_MINUTES: i64 = 15;
 const LINEAR_OOO_REMINDER: &str =
     "Add an out-of-office event in Google Calendar (Linear shows you as Away)";
 
@@ -526,7 +526,7 @@ Keywords:
   vacation  Vacation with DND, GitHub busy, and a Linear out-of-office reminder
   sick      Out sick with DND and a Linear out-of-office reminder
   away      Out of office with DND, GitHub busy, and a Linear out-of-office reminder
-  back      Catching up for 5 minutes, ends DND, and clears GitHub busy
+  back      Catching up for 15 minutes, ends DND, and clears GitHub busy
   clear     Clears Slack and GitHub status and ends DND
 
 Examples:
@@ -536,7 +536,7 @@ Examples:
   st vacation friday    Vacation until Friday at 7am
   st vacation 3/10 9am  Vacation until March 10 at 9am
   st sick tomorrow      Out sick until tomorrow at 7am
-  st back               Clear DND and show Catching up for 5 minutes
+  st back               Clear DND and show Catching up for 15 minutes
   st clear              Clear everything
 
 Dates: friday, mon, tomorrow, 3/10, 3-10-2026, 3/10/26, 2026-03-10
