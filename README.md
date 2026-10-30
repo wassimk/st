@@ -1,7 +1,7 @@
 # st
 
-> [!CAUTION]
-> This project is under active development and is very experimental. It is a personal tool. Use at your own risk.
+> [!NOTE]
+> This is a personal tool and is no longer under active development. Use at your own risk.
 
 Set your status across Slack and GitHub with a single command, with reminders for Linear.
 
