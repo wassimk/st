@@ -32,6 +32,7 @@ Create `~/.config/st/config.toml`:
 
 ```toml
 github_org_id = "YOUR_ORG_GRAPHQL_NODE_ID"  # limits GitHub busy status to this org
+github_org_name = "Your Org"                 # optional, shown in output
 ```
 
 To find your GitHub org's GraphQL node ID, run:

@@ -14,6 +14,7 @@ const LINEAR_OOO_REMINDER: &str =
 #[derive(Deserialize, Default)]
 struct Config {
     github_org_id: Option<String>,
+    github_org_name: Option<String>,
 }
 
 fn config_path() -> PathBuf {
@@ -572,10 +573,10 @@ fn run_set(status: &Status, back_date: Option<DateTime<Local>>, config: &Config)
     } else if status.github_busy {
         match set_github_status(status, back_date, config.github_org_id.as_deref()) {
             Ok(()) => {
-                let org = if config.github_org_id.is_some() {
-                    " (Planning Center only)"
-                } else {
-                    ""
+                let org = match (&config.github_org_id, &config.github_org_name) {
+                    (Some(_), Some(name)) => format!(" ({name} only)"),
+                    (Some(_), None) => " (org only)".to_string(),
+                    _ => String::new(),
                 };
                 println!("  GitHub  \u{2713} Limited availability{org}");
             }
