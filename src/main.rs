@@ -198,6 +198,14 @@ fn format_time(dt: DateTime<Local>) -> String {
     }
 }
 
+fn format_until(dt: DateTime<Local>, today: NaiveDate) -> String {
+    if dt.date_naive() == today {
+        format_time(dt)
+    } else {
+        format!("{} {}", dt.format("%A"), format_time(dt))
+    }
+}
+
 fn next_workday(today: NaiveDate) -> NaiveDate {
     let mut date = today + chrono::Duration::days(1);
     while matches!(date.weekday(), Weekday::Sat | Weekday::Sun) {
@@ -566,7 +574,9 @@ fn run_set(status: &Status, back_date: Option<DateTime<Local>>, config: &Config)
                 _ => status.slack_text.to_string(),
             };
             let dnd_detail = match (status.slack_dnd, back_date) {
-                (true, Some(dt)) => format!(" (DND until {})", format_time(dt)),
+                (true, Some(dt)) => {
+                    format!(" (DND until {})", format_until(dt, Local::now().date_naive()))
+                }
                 (true, None) => " (DND on)".to_string(),
                 _ => String::new(),
             };
@@ -695,6 +705,15 @@ mod tests {
         assert_eq!(next_workday(date(2026, 10, 30)), date(2026, 11, 2));
         assert_eq!(next_workday(date(2026, 10, 31)), date(2026, 11, 2));
         assert_eq!(next_workday(date(2026, 11, 1)), date(2026, 11, 2));
+    }
+
+    #[test]
+    fn dnd_until_includes_weekday_when_not_today() {
+        let friday = date(2026, 10, 30);
+        let today_1pm = to_local_datetime(friday, time(13, 0));
+        let monday_7am = to_local_datetime(date(2026, 11, 2), time(7, 0));
+        assert_eq!(format_until(today_1pm, friday), "1pm");
+        assert_eq!(format_until(monday_7am, friday), "Monday 7am");
     }
 
     #[test]
