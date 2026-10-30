@@ -5,16 +5,13 @@ The README GIF is rendered with [VHS](https://github.com/charmbracelet/vhs) from
 ## Requirements
 
 - `vhs`
-- `python3`
 - JetBrainsMono Nerd Font
-- A release build of `st`: `cargo build --release`
 
 ## Rendering
 
 From the repo root:
 
 ```shell
-cargo build --release
 vhs demo/st.tape
 ```
 
@@ -22,6 +19,6 @@ This overwrites `demo/st.gif`.
 
 ## How it works
 
-No real Slack or GitHub account is touched. `fake_apis.py` serves fake Slack and GitHub GraphQL endpoints on `127.0.0.1:19200` that always succeed. The tape points `ST_SLACK_API_URL` and `ST_GITHUB_API_URL` at it, sets dummy tokens, and points `HOME` at a temp directory with a demo config, so the GitHub line shows a fake "Acme" org instead of the real one.
+No real Slack or GitHub account is touched. The tape puts `demo/bin` first on `PATH`, so `st` runs the stand-in script `demo/bin/st` instead of the real CLI. It prints the output the real `st` gives for the three commands in the tape, copied from a real run with a demo config whose GitHub org is named "Acme".
 
-The return date in `st vacation friday` depends on the day you render, so the date in the GIF changes between renders.
+If `st`'s output changes, update the matching lines in `demo/bin/st` and re-render. To add a command to the demo, add a case for it in `demo/bin/st` first.

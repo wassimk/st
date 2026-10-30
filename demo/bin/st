@@ -1,0 +1,25 @@
+#!/usr/bin/env bash
+# Stand-in for st in the README demo. Prints the output the real st gives for the
+# commands in st.tape, without calling Slack or GitHub.
+
+case "$*" in
+"meeting 3pm Standup")
+  echo "  Slack   ✓ Standup :virtual-meeting:"
+  echo "  GitHub  - No change"
+  echo "  Linear  - No change"
+  ;;
+"vacation friday")
+  echo "  Slack   ✓ Off recharging :desert_island: (DND until Mon 11/9 7am)"
+  echo "  GitHub  ✓ Limited availability (Acme only)"
+  echo "  Linear  ! Add an out-of-office event in Google Calendar (Linear shows you as Away)"
+  ;;
+"back")
+  echo "  Slack   ✓ Catching up :inbox_tray: (DND off)"
+  echo "  GitHub  ✓ Cleared"
+  echo "  Linear  ! If you're back early, end your Google Calendar out-of-office event"
+  ;;
+*)
+  echo "demo/bin/st has no output for: st $*" >&2
+  exit 1
+  ;;
+esac
