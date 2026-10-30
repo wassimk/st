@@ -22,7 +22,7 @@ cargo install --path .
 
 Set these in your shell profile:
 
-- `SLACK_PAT` — Slack User OAuth Token (`xoxp-...`) with `users.profile:write` and `dnd:write` scopes
+- `SLACK_PAT` — Slack User OAuth Token (`xoxp-...`) with `users.profile:write`, `dnd:write`, and `users:write` scopes, plus `users.profile:read` for `st clear --if`
 - `GITHUB_PAT` — GitHub classic Personal Access Token with `user` and `read:org` scopes
 
 ### Config File
@@ -58,7 +58,8 @@ st <keyword> [back_date] [back_time]
 | `sick` | Out sick + DND | Busy (org-scoped) | Reminds to add Google Calendar OOO |
 | `away` | Away for a bit until 5pm + DND | Busy (org-scoped) | Reminds to add Google Calendar OOO |
 | `back` | Catching up for 15 min, clears DND | Clears busy | Reminds to end OOO early |
-| `clear` | Clears everything | Clears status | — |
+| `clear` | Clears everything, sets you active | Clears status | — |
+| `clear --if <keyword>` | Clears the status only if its emoji is still that keyword's, leaves DND alone | — | — |
 
 Linear shows you as Away from your Google Calendar out-of-office events, and it has no way to set that from the API, so `st` reminds you instead.
 
@@ -76,6 +77,7 @@ st sick tomorrow      # Out sick until tomorrow 7am
 st eod                # Outside work hours, DND until 7am next work day
 st back               # Clear everything, set "Catching up" for 15 min
 st clear              # Clear everything
+st clear --if meeting # Clear the meeting status, but leave lunch or anything else alone
 ```
 
 ### Custom Messages

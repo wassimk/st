@@ -152,18 +152,19 @@ fn parse_time(input: Option<&str>) -> Result<NaiveTime> {
         _ => hour,
     };
 
-    NaiveTime::from_hms_opt(hour, minute, 0)
-        .ok_or_else(|| anyhow::anyhow!("Invalid time: {input}"))
+    NaiveTime::from_hms_opt(hour, minute, 0).ok_or_else(|| anyhow::anyhow!("Invalid time: {input}"))
 }
 
 fn to_local_datetime(date: NaiveDate, time: NaiveTime) -> DateTime<Local> {
-    date.and_time(time)
-        .and_local_timezone(Local)
-        .unwrap()
+    date.and_time(time).and_local_timezone(Local).unwrap()
 }
 
 fn format_time(dt: DateTime<Local>) -> String {
-    let hour = dt.format("%I").to_string().trim_start_matches('0').to_string();
+    let hour = dt
+        .format("%I")
+        .to_string()
+        .trim_start_matches('0')
+        .to_string();
     let minute = dt.minute();
     let ampm = dt.format("%p").to_string().to_lowercase();
 
@@ -183,7 +184,13 @@ fn format_until(dt: DateTime<Local>, today: NaiveDate) -> String {
     } else if days_away < 7 {
         format!("{} {}", dt.format("%A"), format_time(dt))
     } else {
-        format!("{} {}/{} {}", dt.format("%a"), date.month(), date.day(), format_time(dt))
+        format!(
+            "{} {}/{} {}",
+            dt.format("%a"),
+            date.month(),
+            date.day(),
+            format_time(dt)
+        )
     }
 }
 
@@ -278,7 +285,7 @@ const STATUSES: &[Status] = &[
     Status {
         keyword: "pairing",
         slack_text: "In a pairing session",
-        slack_emoji: ":tuple:",
+        slack_emoji: ":pair:",
         slack_dnd: false,
         github_busy: false,
         out_of_office: false,
@@ -374,16 +381,18 @@ fn set_github_status(
     );
 
     if let Some(dt) = back_date {
-        input.push_str(&format!(", expiresAt: \"{}\"", dt.to_utc().format("%Y-%m-%dT%H:%M:%SZ")));
+        input.push_str(&format!(
+            ", expiresAt: \"{}\"",
+            dt.to_utc().format("%Y-%m-%dT%H:%M:%SZ")
+        ));
     }
 
     if let Some(id) = org_id {
         input.push_str(&format!(", organizationId: \"{}\"", id));
     }
 
-    let query = format!(
-        "mutation {{ changeUserStatus(input: {{ {input} }}) {{ status {{ message }} }} }}"
-    );
+    let query =
+        format!("mutation {{ changeUserStatus(input: {{ {input} }}) {{ status {{ message }} }} }}");
 
     let body = serde_json::json!({ "query": query });
     github_graphql(&token, &body)?;
@@ -429,7 +438,10 @@ fn set_slack_status(status: &Status, text: &str, back_date: Option<DateTime<Loca
         .read_json()?;
 
     if !resp.ok {
-        anyhow::bail!("Slack users.profile.set: {}", resp.error.unwrap_or_default());
+        anyhow::bail!(
+            "Slack users.profile.set: {}",
+            resp.error.unwrap_or_default()
+        );
     }
 
     if status.slack_dnd {
@@ -477,13 +489,41 @@ fn end_slack_dnd(token: &str) -> Result<()> {
     Ok(())
 }
 
+// "auto" hands presence back to Slack, which shows you active while you're using it
+fn set_slack_presence_auto() -> Result<()> {
+    let token = std::env::var("SLACK_PAT").context("SLACK_PAT not set")?;
+
+    let resp: SlackResponse = ureq::post("https://slack.com/api/users.setPresence")
+        .header("Authorization", &format!("Bearer {token}"))
+        .header("Content-Type", "application/x-www-form-urlencoded")
+        .send_form([("presence", "auto")])?
+        .into_body()
+        .read_json()?;
+
+    if !resp.ok {
+        anyhow::bail!(
+            "Slack users.setPresence: {}",
+            resp.error.unwrap_or_default()
+        );
+    }
+
+    Ok(())
+}
+
 fn clear_slack_status() -> Result<()> {
+    let token = std::env::var("SLACK_PAT").context("SLACK_PAT not set")?;
+    set_slack_profile_status("", "")?;
+    end_slack_dnd(&token)?;
+    Ok(())
+}
+
+fn set_slack_profile_status(text: &str, emoji: &str) -> Result<()> {
     let token = std::env::var("SLACK_PAT").context("SLACK_PAT not set")?;
 
     let profile = serde_json::json!({
         "profile": {
-            "status_text": "",
-            "status_emoji": "",
+            "status_text": text,
+            "status_emoji": emoji,
             "status_expiration": 0
         }
     });
@@ -495,12 +535,62 @@ fn clear_slack_status() -> Result<()> {
         .read_json()?;
 
     if !resp.ok {
-        anyhow::bail!("Slack users.profile.set: {}", resp.error.unwrap_or_default());
+        anyhow::bail!(
+            "Slack users.profile.set: {}",
+            resp.error.unwrap_or_default()
+        );
     }
 
-    end_slack_dnd(&token)?;
-
     Ok(())
+}
+
+// Only the emoji is compared, since custom messages change the status text
+fn should_clear(current_emoji: &str, set_by: &Status) -> bool {
+    current_emoji == set_by.slack_emoji
+}
+
+// --if only makes sense with clear, and names the status that's allowed to be cleared
+fn clear_if_target(
+    keyword: &str,
+    if_keyword: Option<&str>,
+) -> Result<Option<&'static Status>, String> {
+    let Some(if_keyword) = if_keyword else {
+        return Ok(None);
+    };
+
+    if keyword != "clear" {
+        return Err("--if only works with clear (st clear --if meeting)".to_string());
+    }
+
+    find_status(&if_keyword.to_lowercase())
+        .map(Some)
+        .ok_or_else(|| format!("Unknown keyword for --if: {if_keyword}"))
+}
+
+// Needs the users.profile:read scope on top of the scopes for setting status
+fn get_slack_status_emoji() -> Result<String> {
+    let token = std::env::var("SLACK_PAT").context("SLACK_PAT not set")?;
+
+    let resp: serde_json::Value = ureq::get("https://slack.com/api/users.profile.get")
+        .header("Authorization", &format!("Bearer {token}"))
+        .call()?
+        .into_body()
+        .read_json()?;
+
+    if resp["ok"] != true {
+        let error = resp["error"].as_str().unwrap_or_default();
+        if error == "missing_scope" {
+            anyhow::bail!(
+                "Slack users.profile.get: missing_scope (add the users.profile:read scope to your Slack app)"
+            );
+        }
+        anyhow::bail!("Slack users.profile.get: {error}");
+    }
+
+    Ok(resp["profile"]["status_emoji"]
+        .as_str()
+        .unwrap_or_default()
+        .to_string())
 }
 
 #[derive(Deserialize)]
@@ -522,7 +612,10 @@ Keywords:
   away      Away for a bit until 5pm (or a time you give) with DND, GitHub busy, and a
             Linear out-of-office reminder
   back      Catching up for 15 minutes, ends DND, and clears GitHub busy
-  clear     Clears Slack and GitHub status and ends DND
+  clear     Clears Slack and GitHub status, ends DND, and sets you active
+  clear --if KEYWORD
+            Clears only the Slack status, and only if its emoji is still KEYWORD's
+            (needs the users.profile:read scope)
 
 Examples:
   st lunch              DND until the next quarter hour plus 1 hour
@@ -537,6 +630,7 @@ Examples:
   st sick tomorrow      Out sick until tomorrow at 7am
   st back               Clear DND and show Catching up for 15 minutes
   st clear              Clear everything
+  st clear --if meeting Clear the meeting status, leaving any other status alone
 
 Dates: friday, mon, tomorrow, 3/10, 3-10-2026, 3/10/26, 2026-03-10
 Times: 9am, 1:30pm, 15:00, 3p.m. (defaults to 7am)";
@@ -559,6 +653,10 @@ struct Cli {
     /// What time you'll be back (see Times below), then an optional custom message
     #[arg(value_name = "BACK_TIME] [MESSAGE", trailing_var_arg = true)]
     extra: Vec<String>,
+
+    /// With clear, only clear the Slack status if its emoji matches this keyword's
+    #[arg(long = "if", value_name = "KEYWORD")]
+    if_keyword: Option<String>,
 }
 
 // The word after the date is a time only if it parses as one; the rest is the message
@@ -586,7 +684,11 @@ fn parse_args(keyword: &str, words: &[String]) -> Args {
 
     if keyword == "lunch" {
         let (time, message) = split_time_and_message(words);
-        return Args { date: None, time, message };
+        return Args {
+            date: None,
+            time,
+            message,
+        };
     }
 
     let takes_bare_time = matches!(keyword, "meeting" | "pairing" | "away");
@@ -594,15 +696,27 @@ fn parse_args(keyword: &str, words: &[String]) -> Args {
     match words.first() {
         Some(first) if parse_back_date(first, None).is_ok() => {
             let (time, message) = split_time_and_message(&words[1..]);
-            Args { date: Some(first.clone()), time, message }
+            Args {
+                date: Some(first.clone()),
+                time,
+                message,
+            }
         }
         Some(first) if takes_bare_time && parse_time(Some(first)).is_ok() => {
             let (time, message) = split_time_and_message(words);
-            Args { date: None, time, message }
+            Args {
+                date: None,
+                time,
+                message,
+            }
         }
         Some(first) if date_required => {
             let (time, message) = split_time_and_message(&words[1..]);
-            Args { date: Some(first.clone()), time, message }
+            Args {
+                date: Some(first.clone()),
+                time,
+                message,
+            }
         }
         _ => Args {
             date: None,
@@ -625,16 +739,23 @@ fn main() {
         std::process::exit(1);
     }
 
+    let clear_if = clear_if_target(&keyword, cli.if_keyword.as_deref()).unwrap_or_else(|e| {
+        eprintln!("{e}");
+        std::process::exit(1);
+    });
+
     let out_of_office = find_status(&keyword).is_some_and(|s| s.out_of_office);
     let words: Vec<String> = cli.back_date.into_iter().chain(cli.extra).collect();
     let args = parse_args(&keyword, &words);
 
     // A time with no date means later today, read the same way as a lunch time
     let back_dt = if keyword == "lunch" || (args.date.is_none() && args.time.is_some()) {
-        Some(parse_today_back_time(args.time.as_deref()).unwrap_or_else(|e| {
-            eprintln!("{e}");
-            std::process::exit(1);
-        }))
+        Some(
+            parse_today_back_time(args.time.as_deref()).unwrap_or_else(|e| {
+                eprintln!("{e}");
+                std::process::exit(1);
+            }),
+        )
     } else if keyword == "back" && args.date.is_none() {
         // "Catching up" is a short heads-up, so it expires on its own
         Some(Local::now() + chrono::Duration::minutes(CATCHING_UP_MINUTES))
@@ -642,22 +763,34 @@ fn main() {
         // Pause until the start of the next work day, so Thursday's eod lasts the weekend
         let time = NaiveTime::from_hms_opt(DEFAULT_BACK_HOUR, 0, 0).unwrap();
         let now = Local::now();
-        Some(to_local_datetime(eod_back_date(now.date_naive(), now.time()), time))
+        Some(to_local_datetime(
+            eod_back_date(now.date_naive(), now.time()),
+            time,
+        ))
     } else if keyword == "away" && args.date.is_none() {
         let time = NaiveTime::from_hms_opt(END_OF_DAY_HOUR, 0, 0).unwrap();
         let now = Local::now();
-        Some(to_local_datetime(away_back_date(now.date_naive(), now.time()), time))
+        Some(to_local_datetime(
+            away_back_date(now.date_naive(), now.time()),
+            time,
+        ))
     } else {
         args.date.as_deref().map(|s| {
             let dt = parse_back_date(s, args.time.as_deref()).unwrap_or_else(|e| {
                 eprintln!("{e}");
                 std::process::exit(1);
             });
-            if out_of_office { roll_to_workday(dt) } else { dt }
+            if out_of_office {
+                roll_to_workday(dt)
+            } else {
+                dt
+            }
         })
     };
 
-    if is_clear {
+    if let Some(set_by) = clear_if {
+        run_clear_if(set_by);
+    } else if is_clear {
         run_clear();
     } else {
         let status = find_status(&keyword).unwrap();
@@ -680,7 +813,10 @@ fn run_set(status: &Status, text: &str, back_date: Option<DateTime<Local>>, conf
         Ok(()) => {
             let dnd_detail = match (status.slack_dnd, back_date) {
                 (true, Some(dt)) => {
-                    format!(" (DND until {})", format_until(dt, Local::now().date_naive()))
+                    format!(
+                        " (DND until {})",
+                        format_until(dt, Local::now().date_naive())
+                    )
                 }
                 (true, None) => " (DND on)".to_string(),
                 _ => String::new(),
@@ -728,10 +864,40 @@ fn run_set(status: &Status, text: &str, back_date: Option<DateTime<Local>>, conf
     }
 }
 
+// Leaves DND and GitHub alone, since only the Slack status is being checked
+fn run_clear_if(set_by: &Status) {
+    match get_slack_status_emoji() {
+        Ok(emoji) if should_clear(&emoji, set_by) => match set_slack_profile_status("", "") {
+            Ok(()) => println!("  Slack   \u{2713} Cleared {}", set_by.slack_emoji),
+            Err(e) => eprintln!("  Slack   \u{2717} {e}"),
+        },
+        Ok(emoji) => {
+            let current = if emoji.is_empty() {
+                "no status".to_string()
+            } else {
+                emoji
+            };
+            println!(
+                "  Slack   - Skipped, status is {current}, not {}",
+                set_by.slack_emoji
+            );
+        }
+        Err(e) => eprintln!("  Slack   \u{2717} {e}"),
+    }
+
+    println!("  GitHub  - No change");
+    println!("  Linear  - No change");
+}
+
 fn run_clear() {
     match clear_slack_status() {
         Ok(()) => println!("  Slack   \u{2713} Cleared (DND off)"),
         Err(e) => eprintln!("  Slack   \u{2717} {e}"),
+    }
+
+    match set_slack_presence_auto() {
+        Ok(()) => println!("  Slack   \u{2713} Active"),
+        Err(e) => eprintln!("  Slack   \u{2717} setting active: {e}"),
     }
 
     match clear_github_status() {
@@ -752,6 +918,40 @@ mod tests {
 
     fn time(h: u32, m: u32) -> NaiveTime {
         NaiveTime::from_hms_opt(h, m, 0).unwrap()
+    }
+
+    #[test]
+    fn clear_if_matches_on_emoji() {
+        let meeting = find_status("meeting").unwrap();
+        assert!(should_clear(":virtual-meeting:", meeting));
+    }
+
+    #[test]
+    fn clear_if_skips_a_different_or_empty_emoji() {
+        let meeting = find_status("meeting").unwrap();
+        assert!(!should_clear(":fork_and_knife:", meeting));
+        assert!(!should_clear("", meeting));
+    }
+
+    #[test]
+    fn cli_parses_clear_if() {
+        let cli = Cli::try_parse_from(["st", "clear", "--if", "meeting"]).unwrap();
+        assert_eq!(cli.keyword, "clear");
+        assert_eq!(cli.if_keyword.as_deref(), Some("meeting"));
+        assert!(cli.back_date.is_none());
+    }
+
+    #[test]
+    fn clear_if_target_finds_the_status() {
+        let target = clear_if_target("clear", Some("meeting")).unwrap().unwrap();
+        assert_eq!(target.keyword, "meeting");
+        assert!(clear_if_target("clear", None).unwrap().is_none());
+    }
+
+    #[test]
+    fn clear_if_target_rejects_bad_input() {
+        assert!(clear_if_target("lunch", Some("meeting")).is_err());
+        assert!(clear_if_target("clear", Some("bogus")).is_err());
     }
 
     #[test]
@@ -783,38 +983,68 @@ mod tests {
     #[test]
     fn month_day_is_this_year_when_upcoming() {
         let today = date(2026, 3, 1);
-        assert_eq!(parse_date_with_separators("3/10", today), Some(date(2026, 3, 10)));
-        assert_eq!(parse_date_with_separators("3-10", today), Some(date(2026, 3, 10)));
+        assert_eq!(
+            parse_date_with_separators("3/10", today),
+            Some(date(2026, 3, 10))
+        );
+        assert_eq!(
+            parse_date_with_separators("3-10", today),
+            Some(date(2026, 3, 10))
+        );
     }
 
     #[test]
     fn month_day_rolls_to_next_year_when_past() {
         let today = date(2026, 10, 30);
-        assert_eq!(parse_date_with_separators("3/10", today), Some(date(2027, 3, 10)));
+        assert_eq!(
+            parse_date_with_separators("3/10", today),
+            Some(date(2027, 3, 10))
+        );
     }
 
     #[test]
     fn month_day_year_accepts_two_and_four_digit_years() {
         let today = date(2026, 1, 1);
-        assert_eq!(parse_date_with_separators("3/10/26", today), Some(date(2026, 3, 10)));
-        assert_eq!(parse_date_with_separators("3-10-2026", today), Some(date(2026, 3, 10)));
+        assert_eq!(
+            parse_date_with_separators("3/10/26", today),
+            Some(date(2026, 3, 10))
+        );
+        assert_eq!(
+            parse_date_with_separators("3-10-2026", today),
+            Some(date(2026, 3, 10))
+        );
     }
 
     #[test]
     fn year_month_day_is_iso_order() {
         let today = date(2026, 1, 1);
-        assert_eq!(parse_date_with_separators("2026-03-10", today), Some(date(2026, 3, 10)));
-        assert_eq!(parse_date_with_separators("2026/3/10", today), Some(date(2026, 3, 10)));
+        assert_eq!(
+            parse_date_with_separators("2026-03-10", today),
+            Some(date(2026, 3, 10))
+        );
+        assert_eq!(
+            parse_date_with_separators("2026/3/10", today),
+            Some(date(2026, 3, 10))
+        );
     }
 
     #[test]
     fn return_dates_on_days_off_move_to_monday() {
         let at = |d: NaiveDate, h: u32| to_local_datetime(d, time(h, 0));
         // Friday 11/20 at 9am becomes Monday 11/23 at 9am
-        assert_eq!(roll_to_workday(at(date(2026, 11, 20), 9)), at(date(2026, 11, 23), 9));
-        assert_eq!(roll_to_workday(at(date(2026, 11, 22), 7)), at(date(2026, 11, 23), 7));
+        assert_eq!(
+            roll_to_workday(at(date(2026, 11, 20), 9)),
+            at(date(2026, 11, 23), 9)
+        );
+        assert_eq!(
+            roll_to_workday(at(date(2026, 11, 22), 7)),
+            at(date(2026, 11, 23), 7)
+        );
         // Thursday stays Thursday
-        assert_eq!(roll_to_workday(at(date(2026, 11, 19), 7)), at(date(2026, 11, 19), 7));
+        assert_eq!(
+            roll_to_workday(at(date(2026, 11, 19), 7)),
+            at(date(2026, 11, 19), 7)
+        );
     }
 
     #[test]
@@ -831,27 +1061,54 @@ mod tests {
     #[test]
     fn away_ends_at_the_end_of_the_work_day() {
         // Wednesday 1pm ends Wednesday, Wednesday 8pm ends Thursday
-        assert_eq!(away_back_date(date(2026, 10, 28), time(13, 0)), date(2026, 10, 28));
-        assert_eq!(away_back_date(date(2026, 10, 28), time(20, 0)), date(2026, 10, 29));
+        assert_eq!(
+            away_back_date(date(2026, 10, 28), time(13, 0)),
+            date(2026, 10, 28)
+        );
+        assert_eq!(
+            away_back_date(date(2026, 10, 28), time(20, 0)),
+            date(2026, 10, 29)
+        );
         // Thursday 8pm and any time Friday end Monday
-        assert_eq!(away_back_date(date(2026, 10, 29), time(20, 0)), date(2026, 11, 2));
-        assert_eq!(away_back_date(date(2026, 10, 30), time(10, 0)), date(2026, 11, 2));
+        assert_eq!(
+            away_back_date(date(2026, 10, 29), time(20, 0)),
+            date(2026, 11, 2)
+        );
+        assert_eq!(
+            away_back_date(date(2026, 10, 30), time(10, 0)),
+            date(2026, 11, 2)
+        );
     }
 
     #[test]
     fn eod_ends_next_work_morning_in_the_evening() {
         // Wednesday 5pm ends Thursday, Thursday 5pm ends Monday
-        assert_eq!(eod_back_date(date(2026, 10, 28), time(17, 0)), date(2026, 10, 29));
-        assert_eq!(eod_back_date(date(2026, 10, 29), time(17, 0)), date(2026, 11, 2));
+        assert_eq!(
+            eod_back_date(date(2026, 10, 28), time(17, 0)),
+            date(2026, 10, 29)
+        );
+        assert_eq!(
+            eod_back_date(date(2026, 10, 29), time(17, 0)),
+            date(2026, 11, 2)
+        );
     }
 
     #[test]
     fn eod_after_midnight_ends_this_morning_on_a_workday() {
         // Thursday 12:30am still ends Thursday 7am, not Monday
-        assert_eq!(eod_back_date(date(2026, 10, 29), time(0, 30)), date(2026, 10, 29));
-        assert_eq!(eod_back_date(date(2026, 10, 26), time(6, 59)), date(2026, 10, 26));
+        assert_eq!(
+            eod_back_date(date(2026, 10, 29), time(0, 30)),
+            date(2026, 10, 29)
+        );
+        assert_eq!(
+            eod_back_date(date(2026, 10, 26), time(6, 59)),
+            date(2026, 10, 26)
+        );
         // Friday 12:30am is a day off, so it rolls to Monday
-        assert_eq!(eod_back_date(date(2026, 10, 30), time(0, 30)), date(2026, 11, 2));
+        assert_eq!(
+            eod_back_date(date(2026, 10, 30), time(0, 30)),
+            date(2026, 11, 2)
+        );
     }
 
     #[test]
@@ -878,7 +1135,10 @@ mod tests {
     #[test]
     fn extra_args_split_into_time_and_message() {
         assert_eq!(split_time_and_message(&[]), (None, None));
-        assert_eq!(split_time_and_message(&words("9am")), (Some("9am".into()), None));
+        assert_eq!(
+            split_time_and_message(&words("9am")),
+            (Some("9am".into()), None)
+        );
         assert_eq!(
             split_time_and_message(&words("9am At the beach")),
             (Some("9am".into()), Some("At the beach".into()))
@@ -904,12 +1164,18 @@ mod tests {
 
     #[test]
     fn message_without_a_date() {
-        assert_eq!(parse_args("meeting", &words("Standup")), args(None, None, Some("Standup")));
+        assert_eq!(
+            parse_args("meeting", &words("Standup")),
+            args(None, None, Some("Standup"))
+        );
         assert_eq!(
             parse_args("pairing", &words("with Jeremy")),
             args(None, None, Some("with Jeremy"))
         );
-        assert_eq!(parse_args("eod", &words("Kid pickup")), args(None, None, Some("Kid pickup")));
+        assert_eq!(
+            parse_args("eod", &words("Kid pickup")),
+            args(None, None, Some("Kid pickup"))
+        );
         assert_eq!(parse_args("meeting", &[]), args(None, None, None));
     }
 
@@ -919,39 +1185,72 @@ mod tests {
             parse_args("vacation", &words("friday 9am At the beach")),
             args(Some("friday"), Some("9am"), Some("At the beach"))
         );
-        assert_eq!(parse_args("eod", &words("monday")), args(Some("monday"), None, None));
+        assert_eq!(
+            parse_args("eod", &words("monday")),
+            args(Some("monday"), None, None)
+        );
     }
 
     #[test]
     fn vacation_and_sick_keep_a_bad_date_as_a_date_so_it_errors() {
-        assert_eq!(parse_args("vacation", &words("fridy")), args(Some("fridy"), None, None));
-        assert_eq!(parse_args("sick", &words("tomorow")), args(Some("tomorow"), None, None));
+        assert_eq!(
+            parse_args("vacation", &words("fridy")),
+            args(Some("fridy"), None, None)
+        );
+        assert_eq!(
+            parse_args("sick", &words("tomorow")),
+            args(Some("tomorow"), None, None)
+        );
     }
 
     #[test]
     fn away_takes_a_message_without_a_date() {
-        assert_eq!(parse_args("away", &words("Doctor appointment")), args(None, None, Some("Doctor appointment")));
+        assert_eq!(
+            parse_args("away", &words("Doctor appointment")),
+            args(None, None, Some("Doctor appointment"))
+        );
     }
 
     #[test]
     fn meeting_pairing_and_away_take_a_time_without_a_date() {
-        assert_eq!(parse_args("meeting", &words("3pm")), args(None, Some("3pm"), None));
+        assert_eq!(
+            parse_args("meeting", &words("3pm")),
+            args(None, Some("3pm"), None)
+        );
         assert_eq!(
             parse_args("pairing", &words("3pm with Jeremy")),
             args(None, Some("3pm"), Some("with Jeremy"))
         );
-        assert_eq!(parse_args("away", &words("3pm")), args(None, Some("3pm"), None));
+        assert_eq!(
+            parse_args("away", &words("3pm")),
+            args(None, Some("3pm"), None)
+        );
         // A date still comes first when given
-        assert_eq!(parse_args("away", &words("friday")), args(Some("friday"), None, None));
+        assert_eq!(
+            parse_args("away", &words("friday")),
+            args(Some("friday"), None, None)
+        );
         // eod doesn't take a bare time, so it's a message
-        assert_eq!(parse_args("eod", &words("3pm")), args(None, None, Some("3pm")));
+        assert_eq!(
+            parse_args("eod", &words("3pm")),
+            args(None, None, Some("3pm"))
+        );
     }
 
     #[test]
     fn lunch_takes_an_optional_time_then_message() {
-        assert_eq!(parse_args("lunch", &words("1pm Tacos")), args(None, Some("1pm"), Some("Tacos")));
-        assert_eq!(parse_args("lunch", &words("Tacos")), args(None, None, Some("Tacos")));
-        assert_eq!(parse_args("lunch", &words("1")), args(None, Some("1"), None));
+        assert_eq!(
+            parse_args("lunch", &words("1pm Tacos")),
+            args(None, Some("1pm"), Some("Tacos"))
+        );
+        assert_eq!(
+            parse_args("lunch", &words("Tacos")),
+            args(None, None, Some("Tacos"))
+        );
+        assert_eq!(
+            parse_args("lunch", &words("1")),
+            args(None, Some("1"), None)
+        );
     }
 
     #[test]
