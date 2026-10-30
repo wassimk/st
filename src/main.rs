@@ -191,6 +191,15 @@ fn is_workday(date: NaiveDate) -> bool {
     !matches!(date.weekday(), Weekday::Fri | Weekday::Sat | Weekday::Sun)
 }
 
+// Being back on a day off means being back the next work day, at the same time
+fn roll_to_workday(dt: DateTime<Local>) -> DateTime<Local> {
+    let mut date = dt.date_naive();
+    while !is_workday(date) {
+        date += chrono::Duration::days(1);
+    }
+    to_local_datetime(date, dt.time())
+}
+
 // Before the back hour on a workday you're still finishing the night before,
 // so eod ends this morning rather than skipping a whole day
 fn eod_back_date(today: NaiveDate, now: NaiveTime) -> NaiveDate {
@@ -508,7 +517,7 @@ Examples:
   st lunch              DND until the next quarter hour plus 1 hour
   st lunch 1:30pm       DND until 1:30pm
   st eod                DND until 7am the next work day
-  st vacation friday    Vacation until Friday at 7am
+  st vacation friday    Off until Monday at 7am, since Fridays are off
   st vacation 3/10 9am  Vacation until March 10 at 9am
   st vacation 3/10 9am At the beach
                         Same, with a custom message
@@ -584,11 +593,13 @@ fn main() {
         let now = Local::now();
         Some(to_local_datetime(eod_back_date(now.date_naive(), now.time()), time))
     } else {
+        let out_of_office = find_status(&keyword).is_some_and(|s| s.out_of_office);
         cli.back_date.map(|s| {
-            parse_back_date(&s, back_time.as_deref()).unwrap_or_else(|e| {
+            let dt = parse_back_date(&s, back_time.as_deref()).unwrap_or_else(|e| {
                 eprintln!("{e}");
                 std::process::exit(1);
-            })
+            });
+            if out_of_office { roll_to_workday(dt) } else { dt }
         })
     };
 
@@ -740,6 +751,16 @@ mod tests {
         let today = date(2026, 1, 1);
         assert_eq!(parse_date_with_separators("2026-03-10", today), Some(date(2026, 3, 10)));
         assert_eq!(parse_date_with_separators("2026/3/10", today), Some(date(2026, 3, 10)));
+    }
+
+    #[test]
+    fn return_dates_on_days_off_move_to_monday() {
+        let at = |d: NaiveDate, h: u32| to_local_datetime(d, time(h, 0));
+        // Friday 11/20 at 9am becomes Monday 11/23 at 9am
+        assert_eq!(roll_to_workday(at(date(2026, 11, 20), 9)), at(date(2026, 11, 23), 9));
+        assert_eq!(roll_to_workday(at(date(2026, 11, 22), 7)), at(date(2026, 11, 23), 7));
+        // Thursday stays Thursday
+        assert_eq!(roll_to_workday(at(date(2026, 11, 19), 7)), at(date(2026, 11, 19), 7));
     }
 
     #[test]

@@ -63,14 +63,14 @@ st <keyword> [back_date] [back_time]
 
 Linear shows you as Away from your Google Calendar out-of-office events, and it has no way to set that from the API, so `st` reminds you instead.
 
-Work days are Monday through Thursday, so `eod` on a Thursday lasts until Monday at 7am.
+Work days are Monday through Thursday, so `eod` on a Thursday lasts until Monday at 7am. A `vacation`, `sick`, or `away` return date on a Friday or weekend moves to Monday at the same time.
 
 ### Examples
 
 ```
 st lunch              # DND for ~1 hour (next quarter-hour + 1hr)
 st lunch 1:30pm       # DND until 1:30pm
-st vacation friday    # Vacation until Friday 7am
+st vacation friday    # Off until Monday 7am, since Fridays are off
 st vacation 3/10 9am  # Vacation until March 10 at 9am
 st vacation 3/10 At the beach  # Custom message in place of "Off recharging"
 st sick tomorrow      # Out sick until tomorrow 7am
