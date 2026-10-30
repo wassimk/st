@@ -5,6 +5,7 @@ use serde::Deserialize;
 use std::path::PathBuf;
 
 const DEFAULT_BACK_HOUR: u32 = 7;
+const END_OF_DAY_HOUR: u32 = 17;
 const CATCHING_UP_MINUTES: i64 = 15;
 const LINEAR_OOO_REMINDER: &str =
     "Add an out-of-office event in Google Calendar (Linear shows you as Away)";
@@ -198,6 +199,15 @@ fn roll_to_workday(dt: DateTime<Local>) -> DateTime<Local> {
         date += chrono::Duration::days(1);
     }
     to_local_datetime(date, dt.time())
+}
+
+// Away with no date lasts the rest of the work day, or all of the next one after hours
+fn away_back_date(today: NaiveDate, now: NaiveTime) -> NaiveDate {
+    if is_workday(today) && now.hour() < END_OF_DAY_HOUR {
+        today
+    } else {
+        next_workday(today)
+    }
 }
 
 // Before the back hour on a workday you're still finishing the night before,
@@ -509,7 +519,8 @@ Keywords:
   eod       Outside work hours with DND until 7am the next work day (Mon-Thu)
   vacation  Off recharging with DND, GitHub busy, and a Linear out-of-office reminder
   sick      Out sick with DND, GitHub busy, and a Linear out-of-office reminder
-  away      Away for a bit with DND, GitHub busy, and a Linear out-of-office reminder
+  away      Away for a bit until 5pm (or a time you give) with DND, GitHub busy, and a
+            Linear out-of-office reminder
   back      Catching up for 15 minutes, ends DND, and clears GitHub busy
   clear     Clears Slack and GitHub status and ends DND
 
@@ -568,9 +579,11 @@ struct Args {
 }
 
 // Words after the keyword are [date] [time] [message], each optional. A first word that
-// isn't a date starts the message, except for out-of-office keywords, where a typo in the
-// date should be an error rather than a status that never ends.
-fn parse_args(keyword: &str, out_of_office: bool, words: &[String]) -> Args {
+// isn't a date starts the message, except for vacation and sick, which have no default end,
+// so a typo in the date should be an error rather than a status that never ends.
+fn parse_args(keyword: &str, words: &[String]) -> Args {
+    let date_required = matches!(keyword, "vacation" | "sick");
+
     if keyword == "lunch" {
         let (time, message) = split_time_and_message(words);
         return Args { date: None, time, message };
@@ -587,7 +600,7 @@ fn parse_args(keyword: &str, out_of_office: bool, words: &[String]) -> Args {
             let (time, message) = split_time_and_message(words);
             Args { date: None, time, message }
         }
-        Some(first) if out_of_office => {
+        Some(first) if date_required => {
             let (time, message) = split_time_and_message(&words[1..]);
             Args { date: Some(first.clone()), time, message }
         }
@@ -614,7 +627,7 @@ fn main() {
 
     let out_of_office = find_status(&keyword).is_some_and(|s| s.out_of_office);
     let words: Vec<String> = cli.back_date.into_iter().chain(cli.extra).collect();
-    let args = parse_args(&keyword, out_of_office, &words);
+    let args = parse_args(&keyword, &words);
 
     // A time with no date means later today, read the same way as a lunch time
     let back_dt = if keyword == "lunch" || (args.date.is_none() && args.time.is_some()) {
@@ -630,6 +643,10 @@ fn main() {
         let time = NaiveTime::from_hms_opt(DEFAULT_BACK_HOUR, 0, 0).unwrap();
         let now = Local::now();
         Some(to_local_datetime(eod_back_date(now.date_naive(), now.time()), time))
+    } else if keyword == "away" && args.date.is_none() {
+        let time = NaiveTime::from_hms_opt(END_OF_DAY_HOUR, 0, 0).unwrap();
+        let now = Local::now();
+        Some(to_local_datetime(away_back_date(now.date_naive(), now.time()), time))
     } else {
         args.date.as_deref().map(|s| {
             let dt = parse_back_date(s, args.time.as_deref()).unwrap_or_else(|e| {
@@ -812,6 +829,16 @@ mod tests {
     }
 
     #[test]
+    fn away_ends_at_the_end_of_the_work_day() {
+        // Wednesday 1pm ends Wednesday, Wednesday 8pm ends Thursday
+        assert_eq!(away_back_date(date(2026, 10, 28), time(13, 0)), date(2026, 10, 28));
+        assert_eq!(away_back_date(date(2026, 10, 28), time(20, 0)), date(2026, 10, 29));
+        // Thursday 8pm and any time Friday end Monday
+        assert_eq!(away_back_date(date(2026, 10, 29), time(20, 0)), date(2026, 11, 2));
+        assert_eq!(away_back_date(date(2026, 10, 30), time(10, 0)), date(2026, 11, 2));
+    }
+
+    #[test]
     fn eod_ends_next_work_morning_in_the_evening() {
         // Wednesday 5pm ends Thursday, Thursday 5pm ends Monday
         assert_eq!(eod_back_date(date(2026, 10, 28), time(17, 0)), date(2026, 10, 29));
@@ -877,48 +904,54 @@ mod tests {
 
     #[test]
     fn message_without_a_date() {
-        assert_eq!(parse_args("meeting", false, &words("Standup")), args(None, None, Some("Standup")));
+        assert_eq!(parse_args("meeting", &words("Standup")), args(None, None, Some("Standup")));
         assert_eq!(
-            parse_args("pairing", false, &words("with Jeremy")),
+            parse_args("pairing", &words("with Jeremy")),
             args(None, None, Some("with Jeremy"))
         );
-        assert_eq!(parse_args("eod", false, &words("Kid pickup")), args(None, None, Some("Kid pickup")));
-        assert_eq!(parse_args("meeting", false, &[]), args(None, None, None));
+        assert_eq!(parse_args("eod", &words("Kid pickup")), args(None, None, Some("Kid pickup")));
+        assert_eq!(parse_args("meeting", &[]), args(None, None, None));
     }
 
     #[test]
     fn date_then_time_then_message() {
         assert_eq!(
-            parse_args("vacation", true, &words("friday 9am At the beach")),
+            parse_args("vacation", &words("friday 9am At the beach")),
             args(Some("friday"), Some("9am"), Some("At the beach"))
         );
-        assert_eq!(parse_args("eod", false, &words("monday")), args(Some("monday"), None, None));
+        assert_eq!(parse_args("eod", &words("monday")), args(Some("monday"), None, None));
     }
 
     #[test]
-    fn out_of_office_keeps_a_bad_date_as_a_date_so_it_errors() {
-        assert_eq!(parse_args("vacation", true, &words("fridy")), args(Some("fridy"), None, None));
+    fn vacation_and_sick_keep_a_bad_date_as_a_date_so_it_errors() {
+        assert_eq!(parse_args("vacation", &words("fridy")), args(Some("fridy"), None, None));
+        assert_eq!(parse_args("sick", &words("tomorow")), args(Some("tomorow"), None, None));
+    }
+
+    #[test]
+    fn away_takes_a_message_without_a_date() {
+        assert_eq!(parse_args("away", &words("Doctor appointment")), args(None, None, Some("Doctor appointment")));
     }
 
     #[test]
     fn meeting_pairing_and_away_take_a_time_without_a_date() {
-        assert_eq!(parse_args("meeting", false, &words("3pm")), args(None, Some("3pm"), None));
+        assert_eq!(parse_args("meeting", &words("3pm")), args(None, Some("3pm"), None));
         assert_eq!(
-            parse_args("pairing", false, &words("3pm with Jeremy")),
+            parse_args("pairing", &words("3pm with Jeremy")),
             args(None, Some("3pm"), Some("with Jeremy"))
         );
-        assert_eq!(parse_args("away", true, &words("3pm")), args(None, Some("3pm"), None));
+        assert_eq!(parse_args("away", &words("3pm")), args(None, Some("3pm"), None));
         // A date still comes first when given
-        assert_eq!(parse_args("away", true, &words("friday")), args(Some("friday"), None, None));
+        assert_eq!(parse_args("away", &words("friday")), args(Some("friday"), None, None));
         // eod doesn't take a bare time, so it's a message
-        assert_eq!(parse_args("eod", false, &words("3pm")), args(None, None, Some("3pm")));
+        assert_eq!(parse_args("eod", &words("3pm")), args(None, None, Some("3pm")));
     }
 
     #[test]
     fn lunch_takes_an_optional_time_then_message() {
-        assert_eq!(parse_args("lunch", false, &words("1pm Tacos")), args(None, Some("1pm"), Some("Tacos")));
-        assert_eq!(parse_args("lunch", false, &words("Tacos")), args(None, None, Some("Tacos")));
-        assert_eq!(parse_args("lunch", false, &words("1")), args(None, Some("1"), None));
+        assert_eq!(parse_args("lunch", &words("1pm Tacos")), args(None, Some("1pm"), Some("Tacos")));
+        assert_eq!(parse_args("lunch", &words("Tacos")), args(None, None, Some("Tacos")));
+        assert_eq!(parse_args("lunch", &words("1")), args(None, Some("1"), None));
     }
 
     #[test]
