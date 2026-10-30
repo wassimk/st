@@ -229,10 +229,20 @@ fn next_workday(today: NaiveDate) -> NaiveDate {
     date
 }
 
+// Without am/pm, "1" means whichever 1 o'clock comes next, so lunch at 1 is 1pm
+fn parse_lunch_time(input: &str, now: NaiveTime) -> Result<NaiveTime> {
+    let time = parse_time(Some(input))?;
+    let has_meridiem = input.chars().any(|c| c.is_ascii_alphabetic());
+    if !has_meridiem && time.hour() < 12 && time <= now {
+        return Ok(time + chrono::Duration::hours(12));
+    }
+    Ok(time)
+}
+
 fn parse_lunch_back_time(input: Option<&str>) -> Result<DateTime<Local>> {
     let today = Local::now().date_naive();
     let time = match input {
-        Some(s) => parse_time(Some(s))?,
+        Some(s) => parse_lunch_time(s, Local::now().time())?,
         None => {
             // Next quarter hour + 1 hour
             let now = Local::now();
@@ -775,6 +785,23 @@ mod tests {
         assert_eq!(eod_back_date(date(2026, 10, 26), time(6, 59)), date(2026, 10, 26));
         // Friday 12:30am is a day off, so it rolls to Monday
         assert_eq!(eod_back_date(date(2026, 10, 30), time(0, 30)), date(2026, 11, 2));
+    }
+
+    #[test]
+    fn lunch_time_without_am_pm_picks_the_next_one() {
+        let morning = time(9, 20);
+        assert_eq!(parse_lunch_time("1", morning).unwrap(), time(13, 0));
+        assert_eq!(parse_lunch_time("12:30", morning).unwrap(), time(12, 30));
+        assert_eq!(parse_lunch_time("11", morning).unwrap(), time(11, 0));
+        assert_eq!(parse_lunch_time("9:15", morning).unwrap(), time(21, 15));
+    }
+
+    #[test]
+    fn lunch_time_with_am_pm_or_24_hour_is_kept() {
+        let morning = time(9, 20);
+        assert_eq!(parse_lunch_time("1am", morning).unwrap(), time(1, 0));
+        assert_eq!(parse_lunch_time("1pm", morning).unwrap(), time(13, 0));
+        assert_eq!(parse_lunch_time("13:00", morning).unwrap(), time(13, 0));
     }
 
     #[test]
