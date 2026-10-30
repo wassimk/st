@@ -501,7 +501,12 @@ struct SlackResponse {
 // --- CLI ---
 
 #[derive(Parser)]
-#[command(name = "st", about = "Set your status across services", version)]
+#[command(
+    name = "st",
+    about = "Set your status across services",
+    version,
+    arg_required_else_help = true
+)]
 struct Cli {
     /// Status keyword: lunch, zoom, tuple, meet, eod, vacation, sick, away, back, clear
     keyword: String,
