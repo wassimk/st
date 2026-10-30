@@ -64,6 +64,8 @@ st <keyword> [back_date] [back_time]
 
 Linear shows you as Away from your Google Calendar out-of-office events, and it has no way to set that from the API, so `st` reminds you instead.
 
+Work days are Monday through Thursday, so `eod` on a Thursday lasts until Monday at 7am.
+
 ### Examples
 
 ```

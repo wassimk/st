@@ -206,9 +206,14 @@ fn format_until(dt: DateTime<Local>, today: NaiveDate) -> String {
     }
 }
 
+// Four-day work week: Monday through Thursday
+fn is_workday(date: NaiveDate) -> bool {
+    !matches!(date.weekday(), Weekday::Fri | Weekday::Sat | Weekday::Sun)
+}
+
 fn next_workday(today: NaiveDate) -> NaiveDate {
     let mut date = today + chrono::Duration::days(1);
-    while matches!(date.weekday(), Weekday::Sat | Weekday::Sun) {
+    while !is_workday(date) {
         date += chrono::Duration::days(1);
     }
     date
@@ -541,7 +546,7 @@ fn main() {
         // "Catching up" is a short heads-up, so it expires on its own
         Some(Local::now() + chrono::Duration::minutes(CATCHING_UP_MINUTES))
     } else if keyword == "eod" && cli.back_date.is_none() {
-        // Pause until the start of the next work day, so Friday's eod lasts the weekend
+        // Pause until the start of the next work day, so Thursday's eod lasts the weekend
         let time = NaiveTime::from_hms_opt(DEFAULT_BACK_HOUR, 0, 0).unwrap();
         Some(to_local_datetime(next_workday(Local::now().date_naive()), time))
     } else {
@@ -703,10 +708,11 @@ mod tests {
     }
 
     #[test]
-    fn next_workday_skips_weekends() {
+    fn next_workday_skips_fridays_and_weekends() {
         // 2026-10-26 is a Monday
         assert_eq!(next_workday(date(2026, 10, 26)), date(2026, 10, 27));
-        assert_eq!(next_workday(date(2026, 10, 29)), date(2026, 10, 30));
+        assert_eq!(next_workday(date(2026, 10, 28)), date(2026, 10, 29));
+        assert_eq!(next_workday(date(2026, 10, 29)), date(2026, 11, 2));
         assert_eq!(next_workday(date(2026, 10, 30)), date(2026, 11, 2));
         assert_eq!(next_workday(date(2026, 10, 31)), date(2026, 11, 2));
         assert_eq!(next_workday(date(2026, 11, 1)), date(2026, 11, 2));
