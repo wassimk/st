@@ -161,31 +161,6 @@ fn to_local_datetime(date: NaiveDate, time: NaiveTime) -> DateTime<Local> {
         .unwrap()
 }
 
-fn format_back_date(dt: DateTime<Local>) -> String {
-    let today = Local::now().date_naive();
-    let date = dt.date_naive();
-    let days_away = (date - today).num_days();
-
-    if days_away <= 7 {
-        format!("Back {}.", date.format("%A"))
-    } else {
-        format!("Back {}/{}.", date.month(), date.day())
-    }
-}
-
-fn format_back_date_with_time(dt: DateTime<Local>) -> String {
-    let today = Local::now().date_naive();
-    let date = dt.date_naive();
-    let days_away = (date - today).num_days();
-    let time = format_time(dt);
-
-    if days_away <= 7 {
-        format!("Back {} {}.", date.format("%A"), time)
-    } else {
-        format!("Back {}/{} {}.", date.month(), date.day(), time)
-    }
-}
-
 fn format_time(dt: DateTime<Local>) -> String {
     let hour = dt.format("%I").to_string().trim_start_matches('0').to_string();
     let minute = dt.minute();
@@ -199,10 +174,15 @@ fn format_time(dt: DateTime<Local>) -> String {
 }
 
 fn format_until(dt: DateTime<Local>, today: NaiveDate) -> String {
-    if dt.date_naive() == today {
+    let date = dt.date_naive();
+    let days_away = (date - today).num_days();
+
+    if days_away == 0 {
         format_time(dt)
-    } else {
+    } else if days_away < 7 {
         format!("{} {}", dt.format("%A"), format_time(dt))
+    } else {
+        format!("{} {}/{} {}", dt.format("%a"), date.month(), date.day(), format_time(dt))
     }
 }
 
@@ -403,17 +383,11 @@ fn clear_github_status() -> Result<()> {
 
 // --- Slack integration ---
 
-fn set_slack_status(
-    status: &Status,
-    back_date: Option<DateTime<Local>>,
-    show_back_in_text: bool,
-) -> Result<()> {
+// Slack shows the expiration under the status, so the text doesn't repeat it
+fn set_slack_status(status: &Status, back_date: Option<DateTime<Local>>) -> Result<()> {
     let token = std::env::var("SLACK_PAT").context("SLACK_PAT not set")?;
 
-    let text = match (back_date, show_back_in_text) {
-        (Some(dt), true) => format!("{}. {}", status.slack_text, format_back_date(dt)),
-        _ => status.slack_text.to_string(),
-    };
+    let text = status.slack_text;
 
     let expiration = match back_date {
         Some(dt) => dt.timestamp(),
@@ -615,13 +589,9 @@ fn run_set(status: &Status, back_date: Option<DateTime<Local>>, config: &Config)
     {
         eprintln!("  Slack   \u{2717} ending DND: {e}");
     }
-    let show_back_in_text = matches!(status.keyword, "vacation" | "sick" | "away");
-    match set_slack_status(status, back_date, show_back_in_text) {
+    match set_slack_status(status, back_date) {
         Ok(()) => {
-            let text = match (back_date, show_back_in_text) {
-                (Some(dt), true) => format!("{}. {}", status.slack_text, format_back_date_with_time(dt)),
-                _ => status.slack_text.to_string(),
-            };
+            let text = status.slack_text;
             let dnd_detail = match (status.slack_dnd, back_date) {
                 (true, Some(dt)) => {
                     format!(" (DND until {})", format_until(dt, Local::now().date_naive()))
@@ -802,6 +772,15 @@ mod tests {
         let monday_7am = to_local_datetime(date(2026, 11, 2), time(7, 0));
         assert_eq!(format_until(today_1pm, friday), "1pm");
         assert_eq!(format_until(monday_7am, friday), "Monday 7am");
+    }
+
+    #[test]
+    fn dnd_until_includes_date_when_a_week_or_more_away() {
+        let friday = date(2026, 10, 30);
+        let next_friday_7am = to_local_datetime(date(2026, 11, 6), time(7, 0));
+        let nov_20_7am = to_local_datetime(date(2026, 11, 20), time(7, 0));
+        assert_eq!(format_until(next_friday_7am, friday), "Fri 11/6 7am");
+        assert_eq!(format_until(nov_20_7am, friday), "Fri 11/20 7am");
     }
 
     #[test]
