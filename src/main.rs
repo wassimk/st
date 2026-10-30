@@ -337,22 +337,10 @@ fn find_status(keyword: &str) -> Option<&'static Status> {
     STATUSES.iter().find(|s| s.keyword == keyword)
 }
 
-// --- API endpoints ---
-
-// The base URLs can be overridden to point at a fake server, which the demo uses
-fn github_graphql_url() -> String {
-    std::env::var("ST_GITHUB_API_URL").unwrap_or_else(|_| "https://api.github.com/graphql".to_string())
-}
-
-fn slack_api_url(method: &str) -> String {
-    let base = std::env::var("ST_SLACK_API_URL").unwrap_or_else(|_| "https://slack.com/api".to_string());
-    format!("{base}/{method}")
-}
-
 // --- GitHub integration ---
 
 fn github_graphql(token: &str, body: &serde_json::Value) -> Result<serde_json::Value> {
-    let resp: serde_json::Value = ureq::post(&github_graphql_url())
+    let resp: serde_json::Value = ureq::post("https://api.github.com/graphql")
         .header("Authorization", &format!("Bearer {token}"))
         .header("User-Agent", "st-cli")
         .send_json(body)?
@@ -434,7 +422,7 @@ fn set_slack_status(status: &Status, text: &str, back_date: Option<DateTime<Loca
         }
     });
 
-    let resp: SlackResponse = ureq::post(&slack_api_url("users.profile.set"))
+    let resp: SlackResponse = ureq::post("https://slack.com/api/users.profile.set")
         .header("Authorization", &format!("Bearer {token}"))
         .send_json(&profile)?
         .into_body()
@@ -459,7 +447,7 @@ fn set_slack_status(status: &Status, text: &str, back_date: Option<DateTime<Loca
 }
 
 fn set_slack_dnd(token: &str, minutes: i64) -> Result<()> {
-    let resp: SlackResponse = ureq::post(&slack_api_url("dnd.setSnooze"))
+    let resp: SlackResponse = ureq::post("https://slack.com/api/dnd.setSnooze")
         .header("Authorization", &format!("Bearer {token}"))
         .header("Content-Type", "application/x-www-form-urlencoded")
         .send_form([("num_minutes", &minutes.to_string())])?
@@ -474,7 +462,7 @@ fn set_slack_dnd(token: &str, minutes: i64) -> Result<()> {
 }
 
 fn end_slack_dnd(token: &str) -> Result<()> {
-    let resp: SlackResponse = ureq::post(&slack_api_url("dnd.endSnooze"))
+    let resp: SlackResponse = ureq::post("https://slack.com/api/dnd.endSnooze")
         .header("Authorization", &format!("Bearer {token}"))
         .header("Content-Type", "application/x-www-form-urlencoded")
         .send_form(std::iter::empty::<(&str, &str)>())?
@@ -500,7 +488,7 @@ fn clear_slack_status() -> Result<()> {
         }
     });
 
-    let resp: SlackResponse = ureq::post(&slack_api_url("users.profile.set"))
+    let resp: SlackResponse = ureq::post("https://slack.com/api/users.profile.set")
         .header("Authorization", &format!("Bearer {token}"))
         .send_json(&profile)?
         .into_body()
