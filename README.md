@@ -1,8 +1,5 @@
 # st
 
-> [!NOTE]
-> This is a personal tool and is no longer under active development. Use at your own risk.
-
 Set your status across Slack and GitHub with a single command, with reminders for Linear.
 
 ## 🛠️ Install
