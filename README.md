@@ -57,7 +57,7 @@ st <keyword> [back_date] [back_time]
 | `eod` | Outside work hours + DND until next work day 7am | — | — |
 | `vacation` | Off recharging + DND | Busy (org-scoped) | Reminds to add Google Calendar OOO |
 | `sick` | Out sick + DND | Busy (org-scoped) | Reminds to add Google Calendar OOO |
-| `away` | Out of office + DND | Busy (org-scoped) | Reminds to add Google Calendar OOO |
+| `away` | Away for a bit + DND | Busy (org-scoped) | Reminds to add Google Calendar OOO |
 | `back` | Catching up for 15 min, clears DND | Clears busy | Reminds to end OOO early |
 | `clear` | Clears everything | Clears status | — |
 
