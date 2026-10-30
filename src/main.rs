@@ -5,13 +5,16 @@ use serde::Deserialize;
 use std::path::PathBuf;
 
 const DEFAULT_BACK_HOUR: u32 = 7;
+const CATCHING_UP_MINUTES: i64 = 15;
+const LINEAR_OOO_REMINDER: &str =
+    "Add an out-of-office event in Google Calendar (Linear shows you as Away)";
 
 // --- Config ---
 
-#[derive(Deserialize)]
+#[derive(Deserialize, Default)]
 struct Config {
     github_org_id: Option<String>,
-    asana_user_gid: Option<String>,
+    github_org_name: Option<String>,
 }
 
 fn config_path() -> PathBuf {
@@ -27,15 +30,9 @@ fn load_config() -> Config {
     match std::fs::read_to_string(&path) {
         Ok(contents) => toml::from_str(&contents).unwrap_or_else(|e| {
             eprintln!("Warning: failed to parse {}: {e}", path.display());
-            Config {
-                github_org_id: None,
-                asana_user_gid: None,
-            }
+            Config::default()
         }),
-        Err(_) => Config {
-            github_org_id: None,
-            asana_user_gid: None,
-        },
+        Err(_) => Config::default(),
     }
 }
 
@@ -95,6 +92,13 @@ fn parse_date_with_separators(input: &str, today: NaiveDate) -> Option<NaiveDate
             if date < today {
                 year += 1;
             }
+            NaiveDate::from_ymd_opt(year, month, day)
+        }
+        // Y-M-D or Y/M/D (4-digit year first)
+        3 if parts[0].len() == 4 => {
+            let year = parts[0].parse::<i32>().ok()?;
+            let month = parts[1].parse::<u32>().ok()?;
+            let day = parts[2].parse::<u32>().ok()?;
             NaiveDate::from_ymd_opt(year, month, day)
         }
         // M/D/Y or M-D-Y (2-digit or 4-digit year)
@@ -194,10 +198,51 @@ fn format_time(dt: DateTime<Local>) -> String {
     }
 }
 
+fn format_until(dt: DateTime<Local>, today: NaiveDate) -> String {
+    if dt.date_naive() == today {
+        format_time(dt)
+    } else {
+        format!("{} {}", dt.format("%A"), format_time(dt))
+    }
+}
+
+// Four-day work week: Monday through Thursday
+fn is_workday(date: NaiveDate) -> bool {
+    !matches!(date.weekday(), Weekday::Fri | Weekday::Sat | Weekday::Sun)
+}
+
+// Before the back hour on a workday you're still finishing the night before,
+// so eod ends this morning rather than skipping a whole day
+fn eod_back_date(today: NaiveDate, now: NaiveTime) -> NaiveDate {
+    if is_workday(today) && now.hour() < DEFAULT_BACK_HOUR {
+        today
+    } else {
+        next_workday(today)
+    }
+}
+
+fn next_workday(today: NaiveDate) -> NaiveDate {
+    let mut date = today + chrono::Duration::days(1);
+    while !is_workday(date) {
+        date += chrono::Duration::days(1);
+    }
+    date
+}
+
+// Without am/pm, "1" means whichever 1 o'clock comes next, so lunch at 1 is 1pm
+fn parse_lunch_time(input: &str, now: NaiveTime) -> Result<NaiveTime> {
+    let time = parse_time(Some(input))?;
+    let has_meridiem = input.chars().any(|c| c.is_ascii_alphabetic());
+    if !has_meridiem && time.hour() < 12 && time <= now {
+        return Ok(time + chrono::Duration::hours(12));
+    }
+    Ok(time)
+}
+
 fn parse_lunch_back_time(input: Option<&str>) -> Result<DateTime<Local>> {
     let today = Local::now().date_naive();
     let time = match input {
-        Some(s) => parse_time(Some(s))?,
+        Some(s) => parse_lunch_time(s, Local::now().time())?,
         None => {
             // Next quarter hour + 1 hour
             let now = Local::now();
@@ -219,50 +264,41 @@ struct Status {
     slack_emoji: &'static str,
     slack_dnd: bool,
     github_busy: bool,
-    #[allow(dead_code)]
-    asana_dnd: bool, // Asana API doesn't support setting OOO yet
+    out_of_office: bool,
 }
 
 const STATUSES: &[Status] = &[
     Status {
         keyword: "lunch",
-        slack_text: "Lunchin'",
+        slack_text: "",
         slack_emoji: ":fork_and_knife:",
         slack_dnd: true,
         github_busy: false,
-        asana_dnd: false,
+        out_of_office: false,
     },
     Status {
-        keyword: "zoom",
-        slack_text: "In a meeting (Zoom)",
-        slack_emoji: ":video_camera:",
+        keyword: "pairing",
+        slack_text: "In a pairing session",
+        slack_emoji: ":tuple:",
         slack_dnd: false,
         github_busy: false,
-        asana_dnd: false,
+        out_of_office: false,
     },
     Status {
-        keyword: "tuple",
-        slack_text: "Pairing (Tuple)",
-        slack_emoji: ":couple:",
-        slack_dnd: false,
-        github_busy: false,
-        asana_dnd: false,
-    },
-    Status {
-        keyword: "meet",
+        keyword: "meeting",
         slack_text: "In a meeting",
-        slack_emoji: ":calendar:",
+        slack_emoji: ":virtual-meeting:",
         slack_dnd: false,
         github_busy: false,
-        asana_dnd: false,
+        out_of_office: false,
     },
     Status {
         keyword: "eod",
-        slack_text: "Done for the day",
-        slack_emoji: ":wave:",
+        slack_text: "Outside work hours",
+        slack_emoji: ":mantelpiece_clock:",
         slack_dnd: true,
         github_busy: false,
-        asana_dnd: true,
+        out_of_office: false,
     },
     Status {
         keyword: "vacation",
@@ -270,15 +306,15 @@ const STATUSES: &[Status] = &[
         slack_emoji: ":desert_island:",
         slack_dnd: true,
         github_busy: true,
-        asana_dnd: true,
+        out_of_office: true,
     },
     Status {
         keyword: "sick",
         slack_text: "Out sick",
         slack_emoji: ":face_with_thermometer:",
         slack_dnd: true,
-        github_busy: false,
-        asana_dnd: true,
+        github_busy: true,
+        out_of_office: true,
     },
     Status {
         keyword: "away",
@@ -286,7 +322,7 @@ const STATUSES: &[Status] = &[
         slack_emoji: ":no_entry:",
         slack_dnd: true,
         github_busy: true,
-        asana_dnd: true,
+        out_of_office: true,
     },
     Status {
         keyword: "back",
@@ -294,7 +330,7 @@ const STATUSES: &[Status] = &[
         slack_emoji: ":inbox_tray:",
         slack_dnd: false,
         github_busy: false,
-        asana_dnd: false,
+        out_of_office: false,
     },
 ];
 
@@ -479,65 +515,49 @@ struct SlackResponse {
     error: Option<String>,
 }
 
-// --- Asana (no API for setting OOO — can only read vacation_dates) ---
-
-#[derive(Deserialize)]
-struct AsanaResponse {
-    data: Vec<AsanaWorkspaceMembership>,
-}
-
-#[derive(Deserialize)]
-struct AsanaWorkspaceMembership {
-    vacation_dates: Option<AsanaVacationDates>,
-}
-
-#[derive(Deserialize)]
-#[allow(dead_code)]
-struct AsanaVacationDates {
-    start_on: Option<String>,
-    end_on: Option<String>,
-}
-
-fn asana_ooo_is_set(config: &Config) -> Result<bool> {
-    let token = std::env::var("ASANA_PAT").context("ASANA_PAT not set")?;
-    let user_gid = config
-        .asana_user_gid
-        .as_deref()
-        .context("asana_user_gid not set in config")?;
-
-    let url = format!(
-        "https://app.asana.com/api/1.0/users/{user_gid}/workspace_memberships?opt_fields=vacation_dates"
-    );
-
-    let resp: AsanaResponse = ureq::get(&url)
-        .header("Authorization", &format!("Bearer {token}"))
-        .call()?
-        .into_body()
-        .read_json()?;
-
-    Ok(resp.data.iter().any(|m| m.vacation_dates.is_some()))
-}
-
-fn asana_ooo_summary(config: &Config) -> Option<String> {
-    match asana_ooo_is_set(config) {
-        Ok(true) => Some("OOO is set".into()),
-        Ok(false) => None,
-        Err(_) => None,
-    }
-}
-
 // --- CLI ---
 
+const AFTER_HELP: &str = "\
+Keywords:
+  lunch     Fork and knife emoji with DND for about an hour, or until a time (st lunch 1:30pm)
+  meeting   In a meeting
+  pairing   In a pairing session
+  eod       Outside work hours with DND until 7am the next work day (Mon-Thu)
+  vacation  Vacation with DND, GitHub busy, and a Linear out-of-office reminder
+  sick      Out sick with DND, GitHub busy, and a Linear out-of-office reminder
+  away      Out of office with DND, GitHub busy, and a Linear out-of-office reminder
+  back      Catching up for 15 minutes, ends DND, and clears GitHub busy
+  clear     Clears Slack and GitHub status and ends DND
+
+Examples:
+  st lunch              DND until the next quarter hour plus 1 hour
+  st lunch 1:30pm       DND until 1:30pm
+  st eod                DND until 7am the next work day
+  st vacation friday    Vacation until Friday at 7am
+  st vacation 3/10 9am  Vacation until March 10 at 9am
+  st sick tomorrow      Out sick until tomorrow at 7am
+  st back               Clear DND and show Catching up for 15 minutes
+  st clear              Clear everything
+
+Dates: friday, mon, tomorrow, 3/10, 3-10-2026, 3/10/26, 2026-03-10
+Times: 9am, 1:30pm, 15:00, 3p.m. (defaults to 7am)";
+
 #[derive(Parser)]
-#[command(name = "st", about = "Set your status across services", version)]
+#[command(
+    name = "st",
+    about = "Set your status across Slack and GitHub, with reminders for Linear",
+    version,
+    arg_required_else_help = true,
+    after_help = AFTER_HELP
+)]
 struct Cli {
-    /// Status keyword: lunch, zoom, tuple, meet, eod, vacation, sick, away, back, clear
+    /// Status to set (see Keywords below)
     keyword: String,
 
-    /// Back date: when you'll return (e.g., friday, 2/28, 2026-03-10, tomorrow)
+    /// When you'll be back (see Dates below)
     back_date: Option<String>,
 
-    /// Back time: what time you'll return (e.g., 8am, 9:30am, 15:00). Defaults to 7am.
+    /// What time you'll be back (see Times below)
     back_time: Option<String>,
 }
 
@@ -549,7 +569,7 @@ fn main() {
 
     if !is_clear && find_status(&keyword).is_none() {
         eprintln!(
-            "Unknown keyword: {keyword}\nAvailable: lunch, zoom, tuple, meet, eod, vacation, sick, away, back, clear"
+            "Unknown keyword: {keyword}\nAvailable: lunch, meeting, pairing, eod, vacation, sick, away, back, clear"
         );
         std::process::exit(1);
     }
@@ -560,6 +580,14 @@ fn main() {
             eprintln!("{e}");
             std::process::exit(1);
         }))
+    } else if keyword == "back" && cli.back_date.is_none() {
+        // "Catching up" is a short heads-up, so it expires on its own
+        Some(Local::now() + chrono::Duration::minutes(CATCHING_UP_MINUTES))
+    } else if keyword == "eod" && cli.back_date.is_none() {
+        // Pause until the start of the next work day, so Thursday's eod lasts the weekend
+        let time = NaiveTime::from_hms_opt(DEFAULT_BACK_HOUR, 0, 0).unwrap();
+        let now = Local::now();
+        Some(to_local_datetime(eod_back_date(now.date_naive(), now.time()), time))
     } else {
         cli.back_date.map(|s| {
             parse_back_date(&s, cli.back_time.as_deref()).unwrap_or_else(|e| {
@@ -570,7 +598,7 @@ fn main() {
     };
 
     if is_clear {
-        run_clear(&config);
+        run_clear();
     } else {
         let status = find_status(&keyword).unwrap();
         run_set(status, back_dt, &config);
@@ -595,12 +623,19 @@ fn run_set(status: &Status, back_date: Option<DateTime<Local>>, config: &Config)
                 _ => status.slack_text.to_string(),
             };
             let dnd_detail = match (status.slack_dnd, back_date) {
-                (true, Some(dt)) => format!(" (DND until {})", format_time(dt)),
+                (true, Some(dt)) => {
+                    format!(" (DND until {})", format_until(dt, Local::now().date_naive()))
+                }
                 (true, None) => " (DND on)".to_string(),
                 _ => String::new(),
             };
             let dnd_cleared = if is_back { " (DND off)" } else { "" };
-            println!("  Slack   \u{2713} {} {}{}{}", text, status.slack_emoji, dnd_detail, dnd_cleared);
+            let label = if text.is_empty() {
+                status.slack_emoji.to_string()
+            } else {
+                format!("{text} {}", status.slack_emoji)
+            };
+            println!("  Slack   \u{2713} {label}{dnd_detail}{dnd_cleared}");
         }
         Err(e) => eprintln!("  Slack   \u{2717} {e}"),
     }
@@ -614,10 +649,10 @@ fn run_set(status: &Status, back_date: Option<DateTime<Local>>, config: &Config)
     } else if status.github_busy {
         match set_github_status(status, back_date, config.github_org_id.as_deref()) {
             Ok(()) => {
-                let org = if config.github_org_id.is_some() {
-                    " (Planning Center only)"
-                } else {
-                    ""
+                let org = match (&config.github_org_id, &config.github_org_name) {
+                    (Some(_), Some(name)) => format!(" ({name} only)"),
+                    (Some(_), None) => " (org only)".to_string(),
+                    _ => String::new(),
                 };
                 println!("  GitHub  \u{2713} Limited availability{org}");
             }
@@ -627,25 +662,17 @@ fn run_set(status: &Status, back_date: Option<DateTime<Local>>, config: &Config)
         println!("  GitHub  - No change");
     }
 
-    // Asana (no API for setting OOO — remind when relevant)
-    if status.keyword == "vacation" || status.keyword == "away" || status.keyword == "sick" {
-        if asana_ooo_summary(config).is_none() {
-            println!("  Asana   ! Set Out of Office manually: Profile (icon) > Set out of office");
-        } else {
-            println!("  Asana   \u{2713} Out of Office already set");
-        }
+    // Linear reads OOO from Google Calendar, so remind instead of setting it
+    if status.out_of_office {
+        println!("  Linear  ! {LINEAR_OOO_REMINDER}");
     } else if is_back {
-        if asana_ooo_summary(config).is_some() {
-            println!("  Asana   ! Clear Out of Office manually: Profile (icon) > Set out of office");
-        } else {
-            println!("  Asana   - No change");
-        }
+        println!("  Linear  ! If you're back early, end your Google Calendar out-of-office event");
     } else {
-        println!("  Asana   - No change");
+        println!("  Linear  - No change");
     }
 }
 
-fn run_clear(config: &Config) {
+fn run_clear() {
     match clear_slack_status() {
         Ok(()) => println!("  Slack   \u{2713} Cleared (DND off)"),
         Err(e) => eprintln!("  Slack   \u{2717} {e}"),
@@ -656,9 +683,131 @@ fn run_clear(config: &Config) {
         Err(e) => eprintln!("  GitHub  \u{2717} {e}"),
     }
 
-    if asana_ooo_summary(config).is_some() {
-        println!("  Asana   ! Clear Out of Office manually: Profile (icon) > Set out of office");
-    } else {
-        println!("  Asana   - No change");
+    println!("  Linear  - No change");
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn date(y: i32, m: u32, d: u32) -> NaiveDate {
+        NaiveDate::from_ymd_opt(y, m, d).unwrap()
+    }
+
+    fn time(h: u32, m: u32) -> NaiveTime {
+        NaiveTime::from_hms_opt(h, m, 0).unwrap()
+    }
+
+    #[test]
+    fn parse_time_defaults_to_back_hour() {
+        assert_eq!(parse_time(None).unwrap(), time(DEFAULT_BACK_HOUR, 0));
+    }
+
+    #[test]
+    fn parse_time_handles_am_pm_formats() {
+        assert_eq!(parse_time(Some("9am")).unwrap(), time(9, 0));
+        assert_eq!(parse_time(Some("1:30pm")).unwrap(), time(13, 30));
+        assert_eq!(parse_time(Some("3p.m.")).unwrap(), time(15, 0));
+        assert_eq!(parse_time(Some("12am")).unwrap(), time(0, 0));
+        assert_eq!(parse_time(Some("12pm")).unwrap(), time(12, 0));
+        assert_eq!(parse_time(Some("9 AM")).unwrap(), time(9, 0));
+    }
+
+    #[test]
+    fn parse_time_handles_24_hour_format() {
+        assert_eq!(parse_time(Some("15:00")).unwrap(), time(15, 0));
+    }
+
+    #[test]
+    fn parse_time_rejects_invalid_input() {
+        assert!(parse_time(Some("25:00")).is_err());
+        assert!(parse_time(Some("noon")).is_err());
+    }
+
+    #[test]
+    fn month_day_is_this_year_when_upcoming() {
+        let today = date(2026, 3, 1);
+        assert_eq!(parse_date_with_separators("3/10", today), Some(date(2026, 3, 10)));
+        assert_eq!(parse_date_with_separators("3-10", today), Some(date(2026, 3, 10)));
+    }
+
+    #[test]
+    fn month_day_rolls_to_next_year_when_past() {
+        let today = date(2026, 10, 30);
+        assert_eq!(parse_date_with_separators("3/10", today), Some(date(2027, 3, 10)));
+    }
+
+    #[test]
+    fn month_day_year_accepts_two_and_four_digit_years() {
+        let today = date(2026, 1, 1);
+        assert_eq!(parse_date_with_separators("3/10/26", today), Some(date(2026, 3, 10)));
+        assert_eq!(parse_date_with_separators("3-10-2026", today), Some(date(2026, 3, 10)));
+    }
+
+    #[test]
+    fn year_month_day_is_iso_order() {
+        let today = date(2026, 1, 1);
+        assert_eq!(parse_date_with_separators("2026-03-10", today), Some(date(2026, 3, 10)));
+        assert_eq!(parse_date_with_separators("2026/3/10", today), Some(date(2026, 3, 10)));
+    }
+
+    #[test]
+    fn next_workday_skips_fridays_and_weekends() {
+        // 2026-10-26 is a Monday
+        assert_eq!(next_workday(date(2026, 10, 26)), date(2026, 10, 27));
+        assert_eq!(next_workday(date(2026, 10, 28)), date(2026, 10, 29));
+        assert_eq!(next_workday(date(2026, 10, 29)), date(2026, 11, 2));
+        assert_eq!(next_workday(date(2026, 10, 30)), date(2026, 11, 2));
+        assert_eq!(next_workday(date(2026, 10, 31)), date(2026, 11, 2));
+        assert_eq!(next_workday(date(2026, 11, 1)), date(2026, 11, 2));
+    }
+
+    #[test]
+    fn eod_ends_next_work_morning_in_the_evening() {
+        // Wednesday 5pm ends Thursday, Thursday 5pm ends Monday
+        assert_eq!(eod_back_date(date(2026, 10, 28), time(17, 0)), date(2026, 10, 29));
+        assert_eq!(eod_back_date(date(2026, 10, 29), time(17, 0)), date(2026, 11, 2));
+    }
+
+    #[test]
+    fn eod_after_midnight_ends_this_morning_on_a_workday() {
+        // Thursday 12:30am still ends Thursday 7am, not Monday
+        assert_eq!(eod_back_date(date(2026, 10, 29), time(0, 30)), date(2026, 10, 29));
+        assert_eq!(eod_back_date(date(2026, 10, 26), time(6, 59)), date(2026, 10, 26));
+        // Friday 12:30am is a day off, so it rolls to Monday
+        assert_eq!(eod_back_date(date(2026, 10, 30), time(0, 30)), date(2026, 11, 2));
+    }
+
+    #[test]
+    fn lunch_time_without_am_pm_picks_the_next_one() {
+        let morning = time(9, 20);
+        assert_eq!(parse_lunch_time("1", morning).unwrap(), time(13, 0));
+        assert_eq!(parse_lunch_time("12:30", morning).unwrap(), time(12, 30));
+        assert_eq!(parse_lunch_time("11", morning).unwrap(), time(11, 0));
+        assert_eq!(parse_lunch_time("9:15", morning).unwrap(), time(21, 15));
+    }
+
+    #[test]
+    fn lunch_time_with_am_pm_or_24_hour_is_kept() {
+        let morning = time(9, 20);
+        assert_eq!(parse_lunch_time("1am", morning).unwrap(), time(1, 0));
+        assert_eq!(parse_lunch_time("1pm", morning).unwrap(), time(13, 0));
+        assert_eq!(parse_lunch_time("13:00", morning).unwrap(), time(13, 0));
+    }
+
+    #[test]
+    fn dnd_until_includes_weekday_when_not_today() {
+        let friday = date(2026, 10, 30);
+        let today_1pm = to_local_datetime(friday, time(13, 0));
+        let monday_7am = to_local_datetime(date(2026, 11, 2), time(7, 0));
+        assert_eq!(format_until(today_1pm, friday), "1pm");
+        assert_eq!(format_until(monday_7am, friday), "Monday 7am");
+    }
+
+    #[test]
+    fn invalid_dates_return_none() {
+        let today = date(2026, 1, 1);
+        assert_eq!(parse_date_with_separators("13/1", today), None);
+        assert_eq!(parse_date_with_separators("friday", today), None);
     }
 }
