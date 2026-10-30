@@ -5,6 +5,7 @@ use serde::Deserialize;
 use std::path::PathBuf;
 
 const DEFAULT_BACK_HOUR: u32 = 7;
+const CATCHING_UP_MINUTES: i64 = 5;
 const LINEAR_OOO_REMINDER: &str =
     "Add an out-of-office event in Google Calendar (Linear shows you as Away)";
 
@@ -514,6 +515,9 @@ fn main() {
             eprintln!("{e}");
             std::process::exit(1);
         }))
+    } else if keyword == "back" && cli.back_date.is_none() {
+        // "Catching up" is a short heads-up, so it expires on its own
+        Some(Local::now() + chrono::Duration::minutes(CATCHING_UP_MINUTES))
     } else {
         cli.back_date.map(|s| {
             parse_back_date(&s, cli.back_time.as_deref()).unwrap_or_else(|e| {

@@ -58,7 +58,7 @@ st <keyword> [back_date] [back_time]
 | `vacation` | Vacation + DND | Busy (org-scoped) | Reminds to add Google Calendar OOO |
 | `sick` | Out sick + DND | — | Reminds to add Google Calendar OOO |
 | `away` | Out of office + DND | Busy (org-scoped) | Reminds to add Google Calendar OOO |
-| `back` | Catching up, clears DND | Clears busy | Reminds to end OOO early |
+| `back` | Catching up for 5 min, clears DND | Clears busy | Reminds to end OOO early |
 | `clear` | Clears everything | Clears status | — |
 
 Linear shows you as Away from your Google Calendar out-of-office events, and it has no way to set that from the API, so `st` reminds you instead.
