@@ -10,8 +10,7 @@ const LINEAR_OOO_REMINDER: &str =
 
 // --- Config ---
 
-#[derive(Deserialize)]
-#[derive(Default)]
+#[derive(Deserialize, Default)]
 struct Config {
     github_org_id: Option<String>,
 }
@@ -597,4 +596,70 @@ fn run_clear() {
     }
 
     println!("  Linear  - No change");
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn date(y: i32, m: u32, d: u32) -> NaiveDate {
+        NaiveDate::from_ymd_opt(y, m, d).unwrap()
+    }
+
+    fn time(h: u32, m: u32) -> NaiveTime {
+        NaiveTime::from_hms_opt(h, m, 0).unwrap()
+    }
+
+    #[test]
+    fn parse_time_defaults_to_back_hour() {
+        assert_eq!(parse_time(None).unwrap(), time(DEFAULT_BACK_HOUR, 0));
+    }
+
+    #[test]
+    fn parse_time_handles_am_pm_formats() {
+        assert_eq!(parse_time(Some("9am")).unwrap(), time(9, 0));
+        assert_eq!(parse_time(Some("1:30pm")).unwrap(), time(13, 30));
+        assert_eq!(parse_time(Some("3p.m.")).unwrap(), time(15, 0));
+        assert_eq!(parse_time(Some("12am")).unwrap(), time(0, 0));
+        assert_eq!(parse_time(Some("12pm")).unwrap(), time(12, 0));
+        assert_eq!(parse_time(Some("9 AM")).unwrap(), time(9, 0));
+    }
+
+    #[test]
+    fn parse_time_handles_24_hour_format() {
+        assert_eq!(parse_time(Some("15:00")).unwrap(), time(15, 0));
+    }
+
+    #[test]
+    fn parse_time_rejects_invalid_input() {
+        assert!(parse_time(Some("25:00")).is_err());
+        assert!(parse_time(Some("noon")).is_err());
+    }
+
+    #[test]
+    fn month_day_is_this_year_when_upcoming() {
+        let today = date(2026, 3, 1);
+        assert_eq!(parse_date_with_separators("3/10", today), Some(date(2026, 3, 10)));
+        assert_eq!(parse_date_with_separators("3-10", today), Some(date(2026, 3, 10)));
+    }
+
+    #[test]
+    fn month_day_rolls_to_next_year_when_past() {
+        let today = date(2026, 10, 30);
+        assert_eq!(parse_date_with_separators("3/10", today), Some(date(2027, 3, 10)));
+    }
+
+    #[test]
+    fn month_day_year_accepts_two_and_four_digit_years() {
+        let today = date(2026, 1, 1);
+        assert_eq!(parse_date_with_separators("3/10/26", today), Some(date(2026, 3, 10)));
+        assert_eq!(parse_date_with_separators("3-10-2026", today), Some(date(2026, 3, 10)));
+    }
+
+    #[test]
+    fn invalid_dates_return_none() {
+        let today = date(2026, 1, 1);
+        assert_eq!(parse_date_with_separators("13/1", today), None);
+        assert_eq!(parse_date_with_separators("friday", today), None);
+    }
 }
