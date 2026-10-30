@@ -277,8 +277,8 @@ const STATUSES: &[Status] = &[
     },
     Status {
         keyword: "eod",
-        slack_text: "Done for the day",
-        slack_emoji: ":wave:",
+        slack_text: "Outside work hours",
+        slack_emoji: ":mantelpiece_clock:",
         slack_dnd: true,
         github_busy: false,
         out_of_office: false,

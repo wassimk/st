@@ -55,7 +55,7 @@ st <keyword> [back_date] [back_time]
 | `zoom` | In a meeting (Zoom) | — | — |
 | `tuple` | Pairing (Tuple) | — | — |
 | `meet` | In a meeting | — | — |
-| `eod` | Done for the day + DND until next work day 7am | — | — |
+| `eod` | Outside work hours + DND until next work day 7am | — | — |
 | `vacation` | Vacation + DND | Busy (org-scoped) | Reminds to add Google Calendar OOO |
 | `sick` | Out sick + DND | — | Reminds to add Google Calendar OOO |
 | `away` | Out of office + DND | Busy (org-scoped) | Reminds to add Google Calendar OOO |
@@ -72,7 +72,7 @@ st lunch 1:30pm       # DND until 1:30pm
 st vacation friday    # Vacation until Friday 7am
 st vacation 3/10 9am  # Vacation until March 10 at 9am
 st sick tomorrow      # Out sick until tomorrow 7am
-st eod                # Done for the day, DND until 7am next work day
+st eod                # Outside work hours, DND until 7am next work day
 st back               # Clear everything, set "Catching up" for 5 min
 st clear              # Clear everything
 ```
