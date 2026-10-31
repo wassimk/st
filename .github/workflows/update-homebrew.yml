@@ -1,7 +1,10 @@
 name: Update Homebrew
 
 on:
-  workflow_run:
+  # workflow_run runs with this repo's secrets. It's safe here because it only
+  # follows this repo's own Release workflow and never checks out or runs code
+  # from the triggering run.
+  workflow_run: # zizmor: ignore[dangerous-triggers]
     workflows: [Release]
     types: [completed]
 
@@ -53,7 +56,9 @@ jobs:
             esac
           done
 
-      - name: Checkout homebrew-tap
+      # Credentials stay persisted because the last step pushes the formula
+      # to homebrew-tap with HOMEBREW_TAP_TOKEN. No artifacts are uploaded.
+      - name: Checkout homebrew-tap # zizmor: ignore[artipacked]
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           repository: wassimk/homebrew-tap
