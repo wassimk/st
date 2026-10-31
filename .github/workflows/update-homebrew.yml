@@ -1,12 +1,24 @@
-name: update-homebrew
+name: Update Homebrew
 
 on:
-  workflow_run:
-    workflows: [release]
+  # workflow_run runs with this repo's secrets. It's safe here because it only
+  # follows this repo's own Release workflow and never checks out or runs code
+  # from the triggering run.
+  workflow_run: # zizmor: ignore[dangerous-triggers]
+    workflows: [Release]
     types: [completed]
+
+permissions: {}
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: false
 
 jobs:
   update-formula:
+    name: Update Formula
+    permissions:
+      contents: read # gh release view and download on this repo
     if: ${{ github.event.workflow_run.conclusion == 'success' }}
     runs-on: ubuntu-latest
 
@@ -23,12 +35,13 @@ jobs:
 
       - name: Download SHA-256 checksums
         run: |
-          gh release download "${{ steps.version.outputs.tag }}" \
+          gh release download "$TAG" \
             --repo wassimk/st \
             --pattern '*-sha.txt' \
             --dir checksums
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAG: ${{ steps.version.outputs.tag }}
 
       - name: Parse checksums
         id: shas
@@ -43,29 +56,35 @@ jobs:
             esac
           done
 
-      - name: Checkout homebrew-tap
-        uses: actions/checkout@v4
+      # Credentials stay persisted because the last step pushes the formula
+      # to homebrew-tap with HOMEBREW_TAP_TOKEN. No artifacts are uploaded.
+      - name: Checkout homebrew-tap # zizmor: ignore[artipacked]
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           repository: wassimk/homebrew-tap
           token: ${{ secrets.HOMEBREW_TAP_TOKEN }}
 
       - name: Update formula
+        env:
+          VERSION: ${{ steps.version.outputs.version }}
+          SHA_ARM64: ${{ steps.shas.outputs.darwin_arm64 }}
+          SHA_X86_64: ${{ steps.shas.outputs.darwin_x86_64 }}
         run: |
-          cat > Formula/st.rb << 'RUBY'
+          cat > Formula/st.rb << RUBY
           class St < Formula
             desc "Set your status across Slack and GitHub with a single command"
             homepage "https://github.com/wassimk/st"
-            version "${{ steps.version.outputs.version }}"
+            version "$VERSION"
             license "MIT"
 
             depends_on :macos
 
             if Hardware::CPU.arm?
               url "https://github.com/wassimk/st/releases/download/v#{version}/st-Darwin-aarch64.tar.gz"
-              sha256 "${{ steps.shas.outputs.darwin_arm64 }}"
+              sha256 "$SHA_ARM64"
             elsif Hardware::CPU.intel?
               url "https://github.com/wassimk/st/releases/download/v#{version}/st-Darwin-x86_64.tar.gz"
-              sha256 "${{ steps.shas.outputs.darwin_x86_64 }}"
+              sha256 "$SHA_X86_64"
             end
 
             def install
@@ -82,10 +101,12 @@ jobs:
         run: sed -i 's/^          //' Formula/st.rb
 
       - name: Commit and push
+        env:
+          VERSION: ${{ steps.version.outputs.version }}
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
           git add Formula/st.rb
           git diff --cached --quiet && echo "No changes to commit" && exit 0
-          git commit -m "feat: update st to ${{ steps.version.outputs.version }}"
+          git commit -m "feat: update st to $VERSION"
           git push
