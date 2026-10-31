@@ -59,7 +59,7 @@ st <keyword> [back_date] [back_time]
 | `away` | Away for a bit until 5pm + DND | Busy (org-scoped) | Reminds to add Google Calendar OOO |
 | `back` | Catching up for 15 min, clears DND | Clears busy | Reminds to end OOO early |
 | `clear` | Clears everything, sets you active | Clears status | — |
-| `clear --if <keyword>` | Clears the status only if its emoji is still that keyword's, leaves DND alone | — | — |
+| `clear --if <keyword>` | Clears the status, ends DND, and sets you active, only if its emoji is still that keyword's | — | — |
 
 Linear shows you as Away from your Google Calendar out-of-office events, and it has no way to set that from the API, so `st` reminds you instead.
 

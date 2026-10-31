@@ -549,6 +549,17 @@ fn should_clear(current_emoji: &str, set_by: &Status) -> bool {
     current_emoji == set_by.slack_emoji
 }
 
+fn skip_message(current_emoji: &str, set_by: &Status) -> String {
+    if current_emoji.is_empty() {
+        "Skipped, you have no status".to_string()
+    } else {
+        format!(
+            "Skipped, status is {current_emoji}, not {}",
+            set_by.slack_emoji
+        )
+    }
+}
+
 // --if only makes sense with clear, and names the status that's allowed to be cleared
 fn clear_if_target(
     keyword: &str,
@@ -614,8 +625,8 @@ Keywords:
   back      Catching up for 15 minutes, ends DND, and clears GitHub busy
   clear     Clears Slack and GitHub status, ends DND, and sets you active
   clear --if KEYWORD
-            Clears only the Slack status, and only if its emoji is still KEYWORD's
-            (needs the users.profile:read scope)
+            Clears the Slack status, ends DND, and sets you active, but only if the
+            status emoji is still KEYWORD's (needs the users.profile:read scope)
 
 Examples:
   st lunch              DND until the next quarter hour plus 1 hour
@@ -864,24 +875,24 @@ fn run_set(status: &Status, text: &str, back_date: Option<DateTime<Local>>, conf
     }
 }
 
-// Leaves DND and GitHub alone, since only the Slack status is being checked
+// When the status still matches, clears like `st clear` does on Slack: the status, DND, and
+// presence. Anything set after it, like lunch, is skipped along with its DND. GitHub is left alone.
 fn run_clear_if(set_by: &Status) {
     match get_slack_status_emoji() {
-        Ok(emoji) if should_clear(&emoji, set_by) => match set_slack_profile_status("", "") {
-            Ok(()) => println!("  Slack   \u{2713} Cleared {}", set_by.slack_emoji),
-            Err(e) => eprintln!("  Slack   \u{2717} {e}"),
-        },
-        Ok(emoji) => {
-            let current = if emoji.is_empty() {
-                "no status".to_string()
-            } else {
-                emoji
-            };
-            println!(
-                "  Slack   - Skipped, status is {current}, not {}",
-                set_by.slack_emoji
-            );
+        Ok(emoji) if should_clear(&emoji, set_by) => {
+            match clear_slack_status() {
+                Ok(()) => println!(
+                    "  Slack   \u{2713} Cleared {} (DND off)",
+                    set_by.slack_emoji
+                ),
+                Err(e) => eprintln!("  Slack   \u{2717} {e}"),
+            }
+            match set_slack_presence_auto() {
+                Ok(()) => println!("  Slack   \u{2713} Active"),
+                Err(e) => eprintln!("  Slack   \u{2717} setting active: {e}"),
+            }
         }
+        Ok(emoji) => println!("  Slack   - {}", skip_message(&emoji, set_by)),
         Err(e) => eprintln!("  Slack   \u{2717} {e}"),
     }
 
@@ -931,6 +942,21 @@ mod tests {
         let meeting = find_status("meeting").unwrap();
         assert!(!should_clear(":fork_and_knife:", meeting));
         assert!(!should_clear("", meeting));
+    }
+
+    #[test]
+    fn skip_message_names_the_other_status() {
+        let meeting = find_status("meeting").unwrap();
+        assert_eq!(
+            skip_message(":fork_and_knife:", meeting),
+            "Skipped, status is :fork_and_knife:, not :virtual-meeting:"
+        );
+    }
+
+    #[test]
+    fn skip_message_without_a_status() {
+        let meeting = find_status("meeting").unwrap();
+        assert_eq!(skip_message("", meeting), "Skipped, you have no status");
     }
 
     #[test]
