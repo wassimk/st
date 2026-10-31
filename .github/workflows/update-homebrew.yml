@@ -1,12 +1,21 @@
-name: update-homebrew
+name: Update Homebrew
 
 on:
   workflow_run:
-    workflows: [release]
+    workflows: [Release]
     types: [completed]
+
+permissions: {}
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: false
 
 jobs:
   update-formula:
+    name: Update Formula
+    permissions:
+      contents: read # gh release view and download on this repo
     if: ${{ github.event.workflow_run.conclusion == 'success' }}
     runs-on: ubuntu-latest
 

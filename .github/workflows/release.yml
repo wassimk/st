@@ -1,15 +1,20 @@
-name: release
+name: Release
 
 on:
   release:
     types: [created]
 
-permissions:
-  contents: write
+permissions: {}
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: false
 
 jobs:
   release:
     name: Release - ${{ matrix.platform.release_for }}
+    permissions:
+      contents: write # gh release upload attaches binaries to the release
     strategy:
       matrix:
         platform:
