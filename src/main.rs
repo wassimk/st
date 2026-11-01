@@ -264,6 +264,7 @@ fn parse_today_back_time(input: Option<&str>) -> Result<DateTime<Local>> {
 
 // --- Status definitions ---
 
+#[derive(Debug, PartialEq)]
 struct Status {
     keyword: &'static str,
     slack_text: &'static str,
@@ -340,8 +341,47 @@ const STATUSES: &[Status] = &[
     },
 ];
 
-fn find_status(keyword: &str) -> Option<&'static Status> {
-    STATUSES.iter().find(|s| s.keyword == keyword)
+// A keyword as it's used at runtime. The emoji and text are what gets set, and everything else
+// (DND, GitHub busy, default end, date rules) comes from the built-in status it's based on.
+#[derive(Debug, Clone, PartialEq)]
+struct Keyword {
+    name: String,
+    base: &'static Status,
+    emoji: String,
+    text: String,
+}
+
+impl Keyword {
+    fn from_status(status: &'static Status) -> Self {
+        Keyword {
+            name: status.keyword.to_string(),
+            base: status,
+            emoji: status.slack_emoji.to_string(),
+            text: status.slack_text.to_string(),
+        }
+    }
+
+    // The built-in keyword whose behavior this one follows, which is itself for a built-in
+    fn behavior(&self) -> &'static str {
+        self.base.keyword
+    }
+}
+
+fn builtin_keywords() -> Vec<Keyword> {
+    STATUSES.iter().map(Keyword::from_status).collect()
+}
+
+fn find_keyword<'a>(keywords: &'a [Keyword], name: &str) -> Option<&'a Keyword> {
+    keywords.iter().find(|k| k.name == name)
+}
+
+fn keyword_names(keywords: &[Keyword]) -> String {
+    keywords
+        .iter()
+        .map(|k| k.name.as_str())
+        .chain(["clear"])
+        .collect::<Vec<_>>()
+        .join(", ")
 }
 
 // --- GitHub integration ---
@@ -362,22 +402,22 @@ fn github_graphql(token: &str, body: &serde_json::Value) -> Result<serde_json::V
 }
 
 fn set_github_status(
-    status: &Status,
+    keyword: &Keyword,
     text: &str,
     back_date: Option<DateTime<Local>>,
     org_id: Option<&str>,
 ) -> Result<()> {
     let token = std::env::var("GITHUB_PAT").context("GITHUB_PAT not set")?;
 
-    if !status.github_busy {
+    if !keyword.base.github_busy {
         return Ok(());
     }
 
     // A JSON string is also a valid GraphQL string, so quotes in a custom message are escaped
     let mut input = format!(
-        "message: {}, emoji: \"{}\", limitedAvailability: true",
+        "message: {}, emoji: {}, limitedAvailability: true",
         serde_json::to_string(text)?,
-        status.slack_emoji,
+        serde_json::to_string(&keyword.emoji)?,
     );
 
     if let Some(dt) = back_date {
@@ -415,7 +455,11 @@ fn clear_github_status() -> Result<()> {
 // --- Slack integration ---
 
 // Slack shows the expiration under the status, so the text doesn't repeat it
-fn set_slack_status(status: &Status, text: &str, back_date: Option<DateTime<Local>>) -> Result<()> {
+fn set_slack_status(
+    keyword: &Keyword,
+    text: &str,
+    back_date: Option<DateTime<Local>>,
+) -> Result<()> {
     let token = std::env::var("SLACK_PAT").context("SLACK_PAT not set")?;
 
     let expiration = match back_date {
@@ -426,7 +470,7 @@ fn set_slack_status(status: &Status, text: &str, back_date: Option<DateTime<Loca
     let profile = serde_json::json!({
         "profile": {
             "status_text": text,
-            "status_emoji": status.slack_emoji,
+            "status_emoji": keyword.emoji,
             "status_expiration": expiration
         }
     });
@@ -444,7 +488,7 @@ fn set_slack_status(status: &Status, text: &str, back_date: Option<DateTime<Loca
         );
     }
 
-    if status.slack_dnd {
+    if keyword.base.slack_dnd {
         let minutes = match back_date {
             Some(dt) => {
                 let diff = dt.signed_duration_since(Local::now()).num_minutes();
@@ -545,26 +589,24 @@ fn set_slack_profile_status(text: &str, emoji: &str) -> Result<()> {
 }
 
 // Only the emoji is compared, since custom messages change the status text
-fn should_clear(current_emoji: &str, set_by: &Status) -> bool {
-    current_emoji == set_by.slack_emoji
+fn should_clear(current_emoji: &str, set_by_emoji: &str) -> bool {
+    current_emoji == set_by_emoji
 }
 
-fn skip_message(current_emoji: &str, set_by: &Status) -> String {
+fn skip_message(current_emoji: &str, set_by_emoji: &str) -> String {
     if current_emoji.is_empty() {
         "Skipped, you have no status".to_string()
     } else {
-        format!(
-            "Skipped, status is {current_emoji}, not {}",
-            set_by.slack_emoji
-        )
+        format!("Skipped, status is {current_emoji}, not {set_by_emoji}")
     }
 }
 
 // --if only makes sense with clear, and names the status that's allowed to be cleared
-fn clear_if_target(
+fn clear_if_target<'a>(
+    keywords: &'a [Keyword],
     keyword: &str,
     if_keyword: Option<&str>,
-) -> Result<Option<&'static Status>, String> {
+) -> Result<Option<&'a Keyword>, String> {
     let Some(if_keyword) = if_keyword else {
         return Ok(None);
     };
@@ -573,7 +615,7 @@ fn clear_if_target(
         return Err("--if only works with clear (st clear --if meeting)".to_string());
     }
 
-    find_status(&if_keyword.to_lowercase())
+    find_keyword(keywords, &if_keyword.to_lowercase())
         .map(Some)
         .ok_or_else(|| format!("Unknown keyword for --if: {if_keyword}"))
 }
@@ -740,24 +782,30 @@ fn parse_args(keyword: &str, words: &[String]) -> Args {
 fn main() {
     let cli = Cli::parse();
     let config = load_config();
-    let keyword = cli.keyword.to_lowercase();
-    let is_clear = keyword == "clear";
+    let keywords = builtin_keywords();
+    let name = cli.keyword.to_lowercase();
+    let is_clear = name == "clear";
+    let selected = find_keyword(&keywords, &name);
 
-    if !is_clear && find_status(&keyword).is_none() {
+    if !is_clear && selected.is_none() {
         eprintln!(
-            "Unknown keyword: {keyword}\nAvailable: lunch, meeting, pairing, eod, vacation, sick, away, back, clear"
+            "Unknown keyword: {name}\nAvailable: {}",
+            keyword_names(&keywords)
         );
         std::process::exit(1);
     }
 
-    let clear_if = clear_if_target(&keyword, cli.if_keyword.as_deref()).unwrap_or_else(|e| {
-        eprintln!("{e}");
-        std::process::exit(1);
-    });
+    let clear_if =
+        clear_if_target(&keywords, &name, cli.if_keyword.as_deref()).unwrap_or_else(|e| {
+            eprintln!("{e}");
+            std::process::exit(1);
+        });
 
-    let out_of_office = find_status(&keyword).is_some_and(|s| s.out_of_office);
+    // Date and time rules follow the built-in keyword, so a custom one acts like its base
+    let keyword = selected.map_or("clear", Keyword::behavior);
+    let out_of_office = selected.is_some_and(|k| k.base.out_of_office);
     let words: Vec<String> = cli.back_date.into_iter().chain(cli.extra).collect();
-    let args = parse_args(&keyword, &words);
+    let args = parse_args(keyword, &words);
 
     // A time with no date means later today, read the same way as a lunch time
     let back_dt = if keyword == "lunch" || (args.date.is_none() && args.time.is_some()) {
@@ -803,15 +851,15 @@ fn main() {
         run_clear_if(set_by);
     } else if is_clear {
         run_clear();
-    } else {
-        let status = find_status(&keyword).unwrap();
-        let text = args.message.as_deref().unwrap_or(status.slack_text);
-        run_set(status, text, back_dt, &config);
+    } else if let Some(selected) = selected {
+        let text = args.message.as_deref().unwrap_or(&selected.text);
+        run_set(selected, text, back_dt, &config);
     }
 }
 
-fn run_set(status: &Status, text: &str, back_date: Option<DateTime<Local>>, config: &Config) {
-    let is_back = status.keyword == "back";
+fn run_set(keyword: &Keyword, text: &str, back_date: Option<DateTime<Local>>, config: &Config) {
+    let status = keyword.base;
+    let is_back = keyword.behavior() == "back";
 
     // Slack (always runs — "back" clears DND then sets catching-up status)
     if is_back
@@ -820,7 +868,7 @@ fn run_set(status: &Status, text: &str, back_date: Option<DateTime<Local>>, conf
     {
         eprintln!("  Slack   \u{2717} ending DND: {e}");
     }
-    match set_slack_status(status, text, back_date) {
+    match set_slack_status(keyword, text, back_date) {
         Ok(()) => {
             let dnd_detail = match (status.slack_dnd, back_date) {
                 (true, Some(dt)) => {
@@ -834,9 +882,9 @@ fn run_set(status: &Status, text: &str, back_date: Option<DateTime<Local>>, conf
             };
             let dnd_cleared = if is_back { " (DND off)" } else { "" };
             let label = if text.is_empty() {
-                status.slack_emoji.to_string()
+                keyword.emoji.clone()
             } else {
-                format!("{text} {}", status.slack_emoji)
+                format!("{text} {}", keyword.emoji)
             };
             println!("  Slack   \u{2713} {label}{dnd_detail}{dnd_cleared}");
         }
@@ -850,7 +898,7 @@ fn run_set(status: &Status, text: &str, back_date: Option<DateTime<Local>>, conf
             Err(e) => eprintln!("  GitHub  \u{2717} {e}"),
         }
     } else if status.github_busy {
-        match set_github_status(status, text, back_date, config.github_org_id.as_deref()) {
+        match set_github_status(keyword, text, back_date, config.github_org_id.as_deref()) {
             Ok(()) => {
                 let org = match (&config.github_org_id, &config.github_org_name) {
                     (Some(_), Some(name)) => format!(" ({name} only)"),
@@ -877,14 +925,11 @@ fn run_set(status: &Status, text: &str, back_date: Option<DateTime<Local>>, conf
 
 // When the status still matches, clears like `st clear` does on Slack: the status, DND, and
 // presence. Anything set after it, like lunch, is skipped along with its DND. GitHub is left alone.
-fn run_clear_if(set_by: &Status) {
+fn run_clear_if(set_by: &Keyword) {
     match get_slack_status_emoji() {
-        Ok(emoji) if should_clear(&emoji, set_by) => {
+        Ok(emoji) if should_clear(&emoji, &set_by.emoji) => {
             match clear_slack_status() {
-                Ok(()) => println!(
-                    "  Slack   \u{2713} Cleared {} (DND off)",
-                    set_by.slack_emoji
-                ),
+                Ok(()) => println!("  Slack   \u{2713} Cleared {} (DND off)", set_by.emoji),
                 Err(e) => eprintln!("  Slack   \u{2717} {e}"),
             }
             match set_slack_presence_auto() {
@@ -892,7 +937,7 @@ fn run_clear_if(set_by: &Status) {
                 Err(e) => eprintln!("  Slack   \u{2717} setting active: {e}"),
             }
         }
-        Ok(emoji) => println!("  Slack   - {}", skip_message(&emoji, set_by)),
+        Ok(emoji) => println!("  Slack   - {}", skip_message(&emoji, &set_by.emoji)),
         Err(e) => eprintln!("  Slack   \u{2717} {e}"),
     }
 
@@ -933,30 +978,29 @@ mod tests {
 
     #[test]
     fn clear_if_matches_on_emoji() {
-        let meeting = find_status("meeting").unwrap();
-        assert!(should_clear(":virtual-meeting:", meeting));
+        assert!(should_clear(":virtual-meeting:", ":virtual-meeting:"));
     }
 
     #[test]
     fn clear_if_skips_a_different_or_empty_emoji() {
-        let meeting = find_status("meeting").unwrap();
-        assert!(!should_clear(":fork_and_knife:", meeting));
-        assert!(!should_clear("", meeting));
+        assert!(!should_clear(":fork_and_knife:", ":virtual-meeting:"));
+        assert!(!should_clear("", ":virtual-meeting:"));
     }
 
     #[test]
     fn skip_message_names_the_other_status() {
-        let meeting = find_status("meeting").unwrap();
         assert_eq!(
-            skip_message(":fork_and_knife:", meeting),
+            skip_message(":fork_and_knife:", ":virtual-meeting:"),
             "Skipped, status is :fork_and_knife:, not :virtual-meeting:"
         );
     }
 
     #[test]
     fn skip_message_without_a_status() {
-        let meeting = find_status("meeting").unwrap();
-        assert_eq!(skip_message("", meeting), "Skipped, you have no status");
+        assert_eq!(
+            skip_message("", ":virtual-meeting:"),
+            "Skipped, you have no status"
+        );
     }
 
     #[test]
@@ -969,15 +1013,20 @@ mod tests {
 
     #[test]
     fn clear_if_target_finds_the_status() {
-        let target = clear_if_target("clear", Some("meeting")).unwrap().unwrap();
-        assert_eq!(target.keyword, "meeting");
-        assert!(clear_if_target("clear", None).unwrap().is_none());
+        let keywords = builtin_keywords();
+        let target = clear_if_target(&keywords, "clear", Some("meeting"))
+            .unwrap()
+            .unwrap();
+        assert_eq!(target.name, "meeting");
+        assert_eq!(target.emoji, ":virtual-meeting:");
+        assert!(clear_if_target(&keywords, "clear", None).unwrap().is_none());
     }
 
     #[test]
     fn clear_if_target_rejects_bad_input() {
-        assert!(clear_if_target("lunch", Some("meeting")).is_err());
-        assert!(clear_if_target("clear", Some("bogus")).is_err());
+        let keywords = builtin_keywords();
+        assert!(clear_if_target(&keywords, "lunch", Some("meeting")).is_err());
+        assert!(clear_if_target(&keywords, "clear", Some("bogus")).is_err());
     }
 
     #[test]
