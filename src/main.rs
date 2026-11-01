@@ -21,10 +21,12 @@ struct Config {
     keywords: BTreeMap<String, KeywordConfig>,
 }
 
-// A [keywords.NAME] table. Every field is optional, and a missing one keeps the default.
+// A [keywords.NAME] table. For a built-in keyword, emoji and text replace its defaults. Any other
+// name adds a keyword, which needs a base: the built-in keyword whose behavior it copies.
 #[derive(Deserialize, Default, Clone)]
 #[serde(deny_unknown_fields)]
 struct KeywordConfig {
+    base: Option<String>,
     emoji: Option<String>,
     text: Option<String>,
 }
@@ -376,6 +378,10 @@ impl Keyword {
     fn behavior(&self) -> &'static str {
         self.base.keyword
     }
+
+    fn is_custom(&self) -> bool {
+        self.name != self.base.keyword
+    }
 }
 
 fn builtin_keywords() -> Vec<Keyword> {
@@ -400,29 +406,104 @@ fn normalize_emoji(input: &str) -> Result<String, String> {
     }
 }
 
-// Applies [keywords.*] from the config on top of the built-in keywords. Returns the keywords
-// and any warnings, or an error for a config entry that can't be used.
+// Words st reads itself, which a config keyword can't take over
+const RESERVED_NAMES: &[&str] = &["clear", "keywords"];
+
+fn is_builtin(name: &str) -> bool {
+    STATUSES.iter().any(|s| s.keyword == name)
+}
+
+fn builtin_names() -> String {
+    STATUSES
+        .iter()
+        .map(|s| s.keyword)
+        .collect::<Vec<_>>()
+        .join(", ")
+}
+
+fn apply_overrides(keyword: &mut Keyword, entry: &KeywordConfig) -> Result<(), String> {
+    if let Some(emoji) = &entry.emoji {
+        keyword.emoji = normalize_emoji(emoji).map_err(|e| format!("emoji: {e}"))?;
+    }
+    if let Some(text) = &entry.text {
+        keyword.text = text.clone();
+    }
+    Ok(())
+}
+
+// Builds a custom keyword from its base, after the base's own overrides, so a sabbatical
+// based on vacation starts with your vacation emoji and text until it sets its own
+fn custom_keyword(
+    name: &str,
+    entry: &KeywordConfig,
+    keywords: &[Keyword],
+) -> Result<Keyword, String> {
+    let valid_name = name
+        .chars()
+        .all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || matches!(c, '-' | '_'));
+    if !valid_name {
+        return Err("names can only use letters, digits, - and _".to_string());
+    }
+
+    let Some(base_name) = &entry.base else {
+        return Err(format!(
+            "needs a base, the built-in keyword it acts like ({})",
+            builtin_names()
+        ));
+    };
+    let base_name = base_name.to_lowercase();
+    let Some(base) = keywords
+        .iter()
+        .find(|k| k.name == base_name && !k.is_custom())
+    else {
+        return Err(format!(
+            "base \"{base_name}\" isn't a built-in keyword ({})",
+            builtin_names()
+        ));
+    };
+
+    let mut keyword = Keyword {
+        name: name.to_string(),
+        ..base.clone()
+    };
+    apply_overrides(&mut keyword, entry)?;
+    Ok(keyword)
+}
+
+// Applies [keywords.*] from the config to the built-in keywords, then adds the custom ones.
+// Returns the keywords and any warnings, or an error for a config entry that can't be used.
 fn resolve_keywords(
     config: &BTreeMap<String, KeywordConfig>,
 ) -> Result<(Vec<Keyword>, Vec<String>), String> {
     let mut keywords = builtin_keywords();
+    let entries: Vec<(String, &KeywordConfig)> = config
+        .iter()
+        .map(|(name, entry)| (name.to_lowercase(), entry))
+        .collect();
 
-    for (name, entry) in config {
-        let name = name.to_lowercase();
-        let Some(keyword) = keywords.iter_mut().find(|k| k.name == name) else {
+    for (name, entry) in &entries {
+        if RESERVED_NAMES.contains(&name.as_str()) {
+            return Err(format!("[keywords.{name}] {name} can't be changed"));
+        }
+        if !is_builtin(name) {
+            continue;
+        }
+        if entry.base.is_some() {
             return Err(format!(
-                "[keywords.{name}] isn't a built-in keyword ({})",
-                keyword_names(&builtin_keywords())
+                "[keywords.{name}] {name} is built in, so it can't have a base"
             ));
-        };
+        }
+        let keyword = keywords.iter_mut().find(|k| &k.name == name).unwrap();
+        apply_overrides(keyword, entry).map_err(|e| format!("[keywords.{name}] {e}"))?;
+    }
 
-        if let Some(emoji) = &entry.emoji {
-            keyword.emoji =
-                normalize_emoji(emoji).map_err(|e| format!("[keywords.{name}] emoji: {e}"))?;
+    for (name, entry) in &entries {
+        if is_builtin(name) {
+            continue;
         }
-        if let Some(text) = &entry.text {
-            keyword.text = text.clone();
-        }
+        let keyword =
+            custom_keyword(name, entry, &keywords).map_err(|e| format!("[keywords.{name}] {e}"))?;
+        keywords.push(keyword);
     }
 
     let warnings = duplicate_emoji_warnings(&keywords);
@@ -1155,6 +1236,88 @@ mod tests {
     fn config_errors_name_the_bad_entry() {
         let err = keywords_from("[keywords.away]\nemoji = \"two words\"").unwrap_err();
         assert!(err.starts_with("[keywords.away] emoji:"), "{err}");
+    }
+
+    #[test]
+    fn custom_keyword_copies_its_base() {
+        let (keywords, warnings) = keywords_from(
+            r#"
+            [keywords.sabbatical]
+            base = "vacation"
+            emoji = "ooo"
+            text = "Sabbatical"
+            "#,
+        )
+        .unwrap();
+        let sabbatical = keyword(&keywords, "sabbatical");
+        assert_eq!(sabbatical.emoji, ":ooo:");
+        assert_eq!(sabbatical.text, "Sabbatical");
+        assert_eq!(sabbatical.behavior(), "vacation");
+        assert!(sabbatical.is_custom());
+        assert!(sabbatical.base.slack_dnd && sabbatical.base.github_busy);
+        assert!(sabbatical.base.out_of_office);
+        assert!(warnings.is_empty());
+        assert!(!keyword(&keywords, "vacation").is_custom());
+    }
+
+    #[test]
+    fn custom_keyword_starts_from_the_base_overrides() {
+        let (keywords, warnings) = keywords_from(
+            r#"
+            [keywords.vacation]
+            emoji = "palm_tree"
+
+            [keywords.conference]
+            base = "Vacation"
+            "#,
+        )
+        .unwrap();
+        let conference = keyword(&keywords, "conference");
+        assert_eq!(conference.emoji, ":palm_tree:");
+        assert_eq!(conference.text, "Off recharging");
+        assert_eq!(
+            warnings,
+            ["vacation and conference share :palm_tree:, so st clear --if can't tell them apart"]
+        );
+    }
+
+    #[test]
+    fn custom_keywords_follow_the_built_ins() {
+        let (keywords, _) = keywords_from(
+            "[keywords.zoo]\nbase = \"away\"\nemoji = \"zap\"\n[keywords.appt]\nbase = \"away\"\nemoji = \"tooth\"",
+        )
+        .unwrap();
+        let names: Vec<&str> = keywords.iter().map(|k| k.name.as_str()).collect();
+        assert_eq!(&names[STATUSES.len()..], ["appt", "zoo"]);
+    }
+
+    #[test]
+    fn config_rejects_bad_custom_keywords() {
+        let cases = [
+            ("[keywords.sabbatical]\nemoji = \"ooo\"", "needs a base"),
+            (
+                "[keywords.sabbatical]\nbase = \"holiday\"",
+                "base \"holiday\" isn't a built-in",
+            ),
+            (
+                "[keywords.a]\nbase = \"away\"\n[keywords.b]\nbase = \"a\"",
+                "base \"a\" isn't a built-in",
+            ),
+            ("[keywords.away]\nbase = \"vacation\"", "away is built in"),
+            ("[keywords.clear]\nemoji = \"x\"", "clear can't be changed"),
+            (
+                "[keywords.keywords]\nbase = \"away\"",
+                "keywords can't be changed",
+            ),
+            (
+                "[keywords.\"day off\"]\nbase = \"away\"",
+                "names can only use",
+            ),
+        ];
+        for (toml, expected) in cases {
+            let err = keywords_from(toml).unwrap_err();
+            assert!(err.contains(expected), "{toml:?} gave {err:?}");
+        }
     }
 
     #[test]
