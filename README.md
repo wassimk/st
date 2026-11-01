@@ -56,7 +56,7 @@ st <keyword> [back_date] [back_time]
 | `eod` | Outside work hours + DND until next work day 7am | — | — |
 | `vacation` | Off recharging + DND | Busy (org-scoped) | Reminds to add Google Calendar OOO |
 | `sick` | Out sick + DND | Busy (org-scoped) | Reminds to add Google Calendar OOO |
-| `away` | Away for a bit until 5pm + DND | Busy (org-scoped) | Reminds to add Google Calendar OOO |
+| `away` | Stepped away for a bit until 5pm + DND | Busy (org-scoped) | Reminds to add Google Calendar OOO |
 | `back` | Catching up for 15 min, clears DND | Clears busy | Reminds to end OOO early |
 | `clear` | Clears everything, sets you active | Clears status | — |
 | `clear --if <keyword>` | Clears the status, ends DND, and sets you active, only if its emoji is still that keyword's | — | — |

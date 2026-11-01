@@ -324,7 +324,7 @@ const STATUSES: &[Status] = &[
     },
     Status {
         keyword: "away",
-        slack_text: "Away for a bit",
+        slack_text: "Stepped away for a bit",
         slack_emoji: ":car:",
         slack_dnd: true,
         github_busy: true,
@@ -620,7 +620,7 @@ Keywords:
   eod       Outside work hours with DND until 7am the next work day (Mon-Thu)
   vacation  Off recharging with DND, GitHub busy, and a Linear out-of-office reminder
   sick      Out sick with DND, GitHub busy, and a Linear out-of-office reminder
-  away      Away for a bit until 5pm (or a time you give) with DND, GitHub busy, and a
+  away      Stepped away for a bit until 5pm (or a time you give) with DND, GitHub busy, and a
             Linear out-of-office reminder
   back      Catching up for 15 minutes, ends DND, and clears GitHub busy
   clear     Clears Slack and GitHub status, ends DND, and sets you active
