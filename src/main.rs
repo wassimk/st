@@ -827,6 +827,14 @@ Keywords:
   clear --if KEYWORD
             Clears the Slack status, ends DND, and sets you active, but only if the
             status emoji is still KEYWORD's (needs the users.profile:read scope)
+  keywords  Lists every keyword with its emoji and text, including your own (--json for JSON)
+
+Change a keyword's emoji or text, or add your own, in ~/.config/st/config.toml:
+  [keywords.meeting]
+  emoji = \":calendar:\"
+  [keywords.sabbatical]
+  base = \"vacation\"
+  text = \"Sabbatical\"
 
 Examples:
   st lunch              DND until the next quarter hour plus 1 hour
@@ -868,6 +876,10 @@ struct Cli {
     /// With clear, only clear the Slack status if its emoji matches this keyword's
     #[arg(long = "if", value_name = "KEYWORD")]
     if_keyword: Option<String>,
+
+    /// With keywords, print them as JSON
+    #[arg(long)]
+    json: bool,
 }
 
 // The word after the date is a time only if it parses as one; the rest is the message
@@ -948,6 +960,20 @@ fn main() {
         eprintln!("Warning: {warning}");
     }
     let name = cli.keyword.to_lowercase();
+
+    if cli.json && name != "keywords" {
+        eprintln!("--json only works with keywords (st keywords --json)");
+        std::process::exit(1);
+    }
+    if name == "keywords" {
+        if cli.json {
+            println!("{:#}", keywords_json(&keywords));
+        } else {
+            print!("{}", keywords_table(&keywords));
+        }
+        return;
+    }
+
     let is_clear = name == "clear";
     let selected = find_keyword(&keywords, &name);
 
@@ -1019,6 +1045,49 @@ fn main() {
         let text = args.message.as_deref().unwrap_or(&selected.text);
         run_set(selected, text, back_dt, &config);
     }
+}
+
+// base is null for a built-in keyword, and names the built-in one a custom keyword acts like
+fn keywords_json(keywords: &[Keyword]) -> serde_json::Value {
+    keywords
+        .iter()
+        .map(|k| {
+            serde_json::json!({
+                "keyword": k.name,
+                "base": k.is_custom().then_some(k.behavior()),
+                "emoji": k.emoji,
+                "text": k.text,
+                "dnd": k.base.slack_dnd,
+                "github_busy": k.base.github_busy,
+                "out_of_office": k.base.out_of_office,
+            })
+        })
+        .collect()
+}
+
+fn keywords_table(keywords: &[Keyword]) -> String {
+    let name_width = keywords.iter().map(|k| k.name.len()).max().unwrap_or(0);
+    let emoji_width = keywords.iter().map(|k| k.emoji.len()).max().unwrap_or(0);
+
+    keywords
+        .iter()
+        .map(|k| {
+            let text = if k.text.is_empty() {
+                "(emoji only)"
+            } else {
+                &k.text
+            };
+            let like = if k.is_custom() {
+                format!(" (like {})", k.behavior())
+            } else {
+                String::new()
+            };
+            format!(
+                "{:name_width$}  {:emoji_width$}  {text}{like}\n",
+                k.name, k.emoji
+            )
+        })
+        .collect()
 }
 
 fn run_set(keyword: &Keyword, text: &str, back_date: Option<DateTime<Local>>, config: &Config) {
@@ -1318,6 +1387,66 @@ mod tests {
             let err = keywords_from(toml).unwrap_err();
             assert!(err.contains(expected), "{toml:?} gave {err:?}");
         }
+    }
+
+    #[test]
+    fn keywords_json_marks_custom_keywords_with_their_base() {
+        let (keywords, _) = keywords_from(
+            "[keywords.sabbatical]\nbase = \"vacation\"\nemoji = \"ooo\"\ntext = \"Sabbatical\"",
+        )
+        .unwrap();
+        let json = keywords_json(&keywords);
+        let all = json.as_array().unwrap();
+        assert_eq!(all.len(), STATUSES.len() + 1);
+        assert_eq!(
+            all[0],
+            serde_json::json!({
+                "keyword": "lunch",
+                "base": null,
+                "emoji": ":fork_and_knife:",
+                "text": "",
+                "dnd": true,
+                "github_busy": false,
+                "out_of_office": false,
+            })
+        );
+        assert_eq!(
+            all.last().unwrap(),
+            &serde_json::json!({
+                "keyword": "sabbatical",
+                "base": "vacation",
+                "emoji": ":ooo:",
+                "text": "Sabbatical",
+                "dnd": true,
+                "github_busy": true,
+                "out_of_office": true,
+            })
+        );
+    }
+
+    #[test]
+    fn keywords_table_lines_up_and_names_the_base() {
+        let (keywords, _) = keywords_from(
+            "[keywords.sabbatical]\nbase = \"vacation\"\nemoji = \"ooo\"\ntext = \"Sabbatical\"",
+        )
+        .unwrap();
+        let table = keywords_table(&keywords);
+        let lines: Vec<&str> = table.lines().collect();
+        assert_eq!(
+            lines[0],
+            "lunch       :fork_and_knife:         (emoji only)"
+        );
+        assert_eq!(
+            lines.last().unwrap(),
+            &"sabbatical  :ooo:                    Sabbatical (like vacation)"
+        );
+    }
+
+    #[test]
+    fn cli_parses_keywords_json() {
+        let cli = Cli::try_parse_from(["st", "keywords", "--json"]).unwrap();
+        assert_eq!(cli.keyword, "keywords");
+        assert!(cli.json);
     }
 
     #[test]
