@@ -48,18 +48,21 @@ st <keyword> [back_date] [back_time]
 
 ### Keywords
 
-| Keyword | Slack | GitHub | Linear |
-|---|---|---|---|
-| `lunch` | :fork_and_knife: only + DND | — | — |
-| `meeting` | In a meeting, optionally until a time | — | — |
-| `pairing` | In a pairing session, optionally until a time | — | — |
-| `eod` | Outside work hours + DND until next work day 7am | — | — |
-| `vacation` | Off recharging + DND | Busy (org-scoped) | Reminds to add Google Calendar OOO |
-| `sick` | Out sick + DND | Busy (org-scoped) | Reminds to add Google Calendar OOO |
-| `away` | Stepped away for a bit until 5pm + DND | Busy (org-scoped) | Reminds to add Google Calendar OOO |
-| `back` | Catching up for 15 min, clears DND | Clears busy | Reminds to end OOO early |
-| `clear` | Clears everything, sets you active | Clears status | — |
-| `clear --if <keyword>` | Clears the status, ends DND, and sets you active, only if its emoji is still that keyword's | — | — |
+| Keyword | Emoji | Slack | GitHub | Linear |
+|---|---|---|---|---|
+| `lunch` | `:fork_and_knife:` 🍴 | Emoji only + DND | — | — |
+| `meeting` | `:virtual-meeting:` | In a meeting, optionally until a time | — | — |
+| `pairing` | `:pair:` | In a pairing session, optionally until a time | — | — |
+| `eod` | `:mantelpiece_clock:` 🕰️ | Outside work hours + DND until next work day 7am | — | — |
+| `vacation` | `:desert_island:` 🏝️ | Off recharging + DND | Busy (org-scoped) | Reminds to add Google Calendar OOO |
+| `sick` | `:face_with_thermometer:` 🤒 | Out sick + DND | Busy (org-scoped) | Reminds to add Google Calendar OOO |
+| `away` | `:car:` 🚗 | Stepped away for a bit until 5pm + DND | Busy (org-scoped) | Reminds to add Google Calendar OOO |
+| `back` | `:inbox_tray:` 📥 | Catching up for 15 min, clears DND | Clears busy | Reminds to end OOO early |
+| `clear` | | Clears everything, sets you active | Clears status | — |
+| `clear --if <keyword>` | | Clears the status, ends DND, and sets you active, only if its emoji is still that keyword's | — | — |
+| `keywords` | | Lists every keyword with its emoji and text, `--json` for JSON | — | — |
+
+`:virtual-meeting:` and `:pair:` are custom Slack emoji. If your workspace doesn't have them, change them in the config (see [Your Own Keywords](#your-own-keywords)).
 
 Linear shows you as Away from your Google Calendar out-of-office events, and it has no way to set that from the API, so `st` reminds you instead.
 
@@ -93,6 +96,36 @@ st vacation 3/10 At the beach
 ```
 
 For `vacation` and `sick`, which have no default end, the first word must be a date if you give anything, so a typo like `fridy` is an error instead of a status that never ends. Quote a message that starts with a number, like `st vacation friday "3 day weekend"`, so the number isn't read as a time.
+
+### Your Own Keywords
+
+You can change the emoji and text of any keyword, or add keywords of your own, in `~/.config/st/config.toml`:
+
+```toml
+# Change a built-in keyword. Leave out anything you want to keep.
+[keywords.meeting]
+emoji = ":calendar:"
+text = "In a call"
+
+# Add a keyword. It acts like its base: DND, GitHub busy, the Linear
+# reminder, and how dates work all come from the built-in keyword.
+[keywords.sabbatical]
+base = "vacation"
+emoji = ":ooo:"
+text = "Sabbatical"
+```
+
+```
+st sabbatical 11/11 10am     # vacation, with your emoji and text
+st clear --if sabbatical     # clears it only if the status is still :ooo:
+st keywords                  # shows every keyword after your changes
+```
+
+- `emoji` takes a Slack emoji name, with or without the colons, including your workspace's custom emoji.
+- `text` is the default message. A message you type still replaces it.
+- A custom keyword starts with its base's emoji and text, so give it its own emoji.
+- `st clear --if` tells keywords apart by emoji, so `st` warns when two share one. If you change an emoji while that status is set, `st clear --if` skips it once. Use `st clear` instead.
+- `clear` and `keywords` can't be changed, and a built-in keyword can't have a `base`.
 
 ### Date Formats
 
