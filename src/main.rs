@@ -325,7 +325,7 @@ const STATUSES: &[Status] = &[
     Status {
         keyword: "away",
         slack_text: "Away for a bit",
-        slack_emoji: ":no_entry:",
+        slack_emoji: ":car:",
         slack_dnd: true,
         github_busy: true,
         out_of_office: true,
