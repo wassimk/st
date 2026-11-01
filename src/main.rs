@@ -546,8 +546,6 @@ fn keyword_names(keywords: &[Keyword]) -> String {
 
 // --- GitHub integration ---
 
-const GRAPHQL_ERROR: &str = "GraphQL error";
-
 fn github_graphql(token: &str, body: &serde_json::Value) -> Result<serde_json::Value> {
     let resp: serde_json::Value = ureq::post("https://api.github.com/graphql")
         .header("Authorization", &format!("Bearer {token}"))
@@ -557,14 +555,15 @@ fn github_graphql(token: &str, body: &serde_json::Value) -> Result<serde_json::V
         .read_json()?;
 
     if let Some(errors) = resp.get("errors") {
-        anyhow::bail!("{GRAPHQL_ERROR}: {errors}");
+        anyhow::bail!("GraphQL error: {errors}");
     }
 
     Ok(resp)
 }
 
-// Returns whether the emoji was set. A custom Slack emoji from the config, like :ooo:, may not
-// exist on GitHub, so when GitHub rejects the status it's set again without the emoji.
+// Returns whether the emoji was set. GitHub only has standard emoji, and for one it doesn't
+// know, like a custom Slack :ooo:, it saves nothing and returns a null status with no error.
+// The status is then set again without the emoji.
 fn set_github_status(
     keyword: &Keyword,
     text: &str,
@@ -574,16 +573,22 @@ fn set_github_status(
     let token = std::env::var("GITHUB_PAT").context("GITHUB_PAT not set")?;
 
     let with_emoji = github_status_query(text, Some(&keyword.emoji), back_date, org_id)?;
-    match github_graphql(&token, &serde_json::json!({ "query": with_emoji })) {
-        Ok(_) => Ok(true),
-        Err(e) if e.to_string().starts_with(GRAPHQL_ERROR) => {
-            let without_emoji = github_status_query(text, None, back_date, org_id)?;
-            github_graphql(&token, &serde_json::json!({ "query": without_emoji }))
-                .map(|_| false)
-                .map_err(|_| e)
-        }
-        Err(e) => Err(e),
+    let resp = github_graphql(&token, &serde_json::json!({ "query": with_emoji }))?;
+    if status_saved(&resp) {
+        return Ok(true);
     }
+
+    let without_emoji = github_status_query(text, None, back_date, org_id)?;
+    let resp = github_graphql(&token, &serde_json::json!({ "query": without_emoji }))?;
+    if status_saved(&resp) {
+        Ok(false)
+    } else {
+        anyhow::bail!("GitHub didn't save the status")
+    }
+}
+
+fn status_saved(resp: &serde_json::Value) -> bool {
+    !resp["data"]["changeUserStatus"]["status"].is_null()
 }
 
 fn github_status_query(
@@ -1483,6 +1488,17 @@ mod tests {
         );
         let without = github_status_query("Out", None, None, None).unwrap();
         assert!(!without.contains("emoji"));
+    }
+
+    // Responses GitHub sent for :desert_island: and for :ooo:, which it doesn't have
+    #[test]
+    fn a_null_github_status_means_it_wasnt_saved() {
+        let saved = serde_json::json!({ "data": { "changeUserStatus": { "status": {
+            "message": "Sabbatical", "emoji": ":desert_island:"
+        } } } });
+        let dropped = serde_json::json!({ "data": { "changeUserStatus": { "status": null } } });
+        assert!(status_saved(&saved));
+        assert!(!status_saved(&dropped));
     }
 
     #[test]
