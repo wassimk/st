@@ -121,7 +121,7 @@ st clear --if sabbatical     # clears it only if the status is still :ooo:
 st keywords                  # shows every keyword after your changes
 ```
 
-- `emoji` takes a Slack emoji name, with or without the colons, including your workspace's custom emoji.
+- `emoji` takes a Slack emoji name, with or without the colons, including your workspace's custom emoji. GitHub only has standard emoji, so a custom one like `:ooo:` is left off the GitHub status.
 - `text` is the default message. A message you type still replaces it.
 - A custom keyword starts with its base's emoji and text, so give it its own emoji.
 - `st clear --if` tells keywords apart by emoji, so `st` warns when two share one. If you change an emoji while that status is set, `st clear --if` skips it once. Use `st clear` instead.
