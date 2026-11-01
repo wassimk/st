@@ -39,12 +39,14 @@ fn config_path() -> PathBuf {
         .join("config.toml")
 }
 
+// A config that doesn't parse stops st, since falling back to the defaults would also drop
+// github_org_id and set GitHub busy for every org
 fn load_config() -> Config {
     let path = config_path();
     match std::fs::read_to_string(&path) {
         Ok(contents) => toml::from_str(&contents).unwrap_or_else(|e| {
-            eprintln!("Warning: failed to parse {}: {e}", path.display());
-            Config::default()
+            eprintln!("Error in {}: {e}", path.display());
+            std::process::exit(1);
         }),
         Err(_) => Config::default(),
     }
