@@ -2,6 +2,7 @@ use anyhow::{Context, Result};
 use chrono::{DateTime, Datelike, Local, NaiveDate, NaiveTime, Timelike, Weekday};
 use clap::Parser;
 use serde::Deserialize;
+use std::collections::BTreeMap;
 use std::path::PathBuf;
 
 const DEFAULT_BACK_HOUR: u32 = 7;
@@ -16,6 +17,16 @@ const LINEAR_OOO_REMINDER: &str =
 struct Config {
     github_org_id: Option<String>,
     github_org_name: Option<String>,
+    #[serde(default)]
+    keywords: BTreeMap<String, KeywordConfig>,
+}
+
+// A [keywords.NAME] table. Every field is optional, and a missing one keeps the default.
+#[derive(Deserialize, Default, Clone)]
+#[serde(deny_unknown_fields)]
+struct KeywordConfig {
+    emoji: Option<String>,
+    text: Option<String>,
 }
 
 fn config_path() -> PathBuf {
@@ -369,6 +380,72 @@ impl Keyword {
 
 fn builtin_keywords() -> Vec<Keyword> {
     STATUSES.iter().map(Keyword::from_status).collect()
+}
+
+// Accepts "car" or ":car:" and returns ":car:". Slack emoji names are letters, digits, and
+// - _ + ' only, which also keeps a config value from breaking the GitHub query.
+fn normalize_emoji(input: &str) -> Result<String, String> {
+    let name = input.trim().trim_matches(':');
+    let valid = !name.is_empty()
+        && name
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || matches!(c, '-' | '_' | '+' | '\''));
+
+    if valid {
+        Ok(format!(":{name}:"))
+    } else {
+        Err(format!(
+            "\"{input}\" isn't a Slack emoji name, like :car: or car"
+        ))
+    }
+}
+
+// Applies [keywords.*] from the config on top of the built-in keywords. Returns the keywords
+// and any warnings, or an error for a config entry that can't be used.
+fn resolve_keywords(
+    config: &BTreeMap<String, KeywordConfig>,
+) -> Result<(Vec<Keyword>, Vec<String>), String> {
+    let mut keywords = builtin_keywords();
+
+    for (name, entry) in config {
+        let name = name.to_lowercase();
+        let Some(keyword) = keywords.iter_mut().find(|k| k.name == name) else {
+            return Err(format!(
+                "[keywords.{name}] isn't a built-in keyword ({})",
+                keyword_names(&builtin_keywords())
+            ));
+        };
+
+        if let Some(emoji) = &entry.emoji {
+            keyword.emoji =
+                normalize_emoji(emoji).map_err(|e| format!("[keywords.{name}] emoji: {e}"))?;
+        }
+        if let Some(text) = &entry.text {
+            keyword.text = text.clone();
+        }
+    }
+
+    let warnings = duplicate_emoji_warnings(&keywords);
+    Ok((keywords, warnings))
+}
+
+// st clear --if tells keywords apart by emoji, so two keywords sharing one can't be told apart
+fn duplicate_emoji_warnings(keywords: &[Keyword]) -> Vec<String> {
+    let mut by_emoji: BTreeMap<&str, Vec<&str>> = BTreeMap::new();
+    for k in keywords {
+        by_emoji.entry(&k.emoji).or_default().push(&k.name);
+    }
+
+    by_emoji
+        .into_iter()
+        .filter(|(_, names)| names.len() > 1)
+        .map(|(emoji, names)| {
+            format!(
+                "{} share {emoji}, so st clear --if can't tell them apart",
+                names.join(" and ")
+            )
+        })
+        .collect()
 }
 
 fn find_keyword<'a>(keywords: &'a [Keyword], name: &str) -> Option<&'a Keyword> {
@@ -782,7 +859,13 @@ fn parse_args(keyword: &str, words: &[String]) -> Args {
 fn main() {
     let cli = Cli::parse();
     let config = load_config();
-    let keywords = builtin_keywords();
+    let (keywords, warnings) = resolve_keywords(&config.keywords).unwrap_or_else(|e| {
+        eprintln!("Error in {}: {e}", config_path().display());
+        std::process::exit(1);
+    });
+    for warning in warnings {
+        eprintln!("Warning: {warning}");
+    }
     let name = cli.keyword.to_lowercase();
     let is_clear = name == "clear";
     let selected = find_keyword(&keywords, &name);
@@ -1000,6 +1083,91 @@ mod tests {
         assert_eq!(
             skip_message("", ":virtual-meeting:"),
             "Skipped, you have no status"
+        );
+    }
+
+    fn keywords_from(toml: &str) -> Result<(Vec<Keyword>, Vec<String>), String> {
+        let config: Config = toml::from_str(toml).unwrap();
+        resolve_keywords(&config.keywords)
+    }
+
+    fn keyword<'a>(keywords: &'a [Keyword], name: &str) -> &'a Keyword {
+        find_keyword(keywords, name).unwrap()
+    }
+
+    #[test]
+    fn no_config_uses_the_built_in_keywords() {
+        let (keywords, warnings) = keywords_from("").unwrap();
+        assert_eq!(keywords, builtin_keywords());
+        assert!(warnings.is_empty());
+    }
+
+    #[test]
+    fn config_overrides_a_built_in_emoji_and_text() {
+        let (keywords, _) = keywords_from(
+            r#"
+            [keywords.meeting]
+            emoji = ":calendar:"
+            text = "In a call"
+            "#,
+        )
+        .unwrap();
+        let meeting = keyword(&keywords, "meeting");
+        assert_eq!(meeting.emoji, ":calendar:");
+        assert_eq!(meeting.text, "In a call");
+        assert_eq!(meeting.behavior(), "meeting");
+    }
+
+    #[test]
+    fn config_override_keeps_defaults_it_leaves_out() {
+        let (keywords, _) = keywords_from("[keywords.away]\ntext = \"At the doctor\"").unwrap();
+        let away = keyword(&keywords, "away");
+        assert_eq!(away.emoji, ":car:");
+        assert_eq!(away.text, "At the doctor");
+        assert_eq!(keyword(&keywords, "lunch"), &builtin_keywords()[0]);
+    }
+
+    #[test]
+    fn config_keyword_names_are_case_insensitive() {
+        let (keywords, _) = keywords_from("[keywords.Lunch]\nemoji = \"taco\"").unwrap();
+        assert_eq!(keyword(&keywords, "lunch").emoji, ":taco:");
+    }
+
+    #[test]
+    fn emoji_accepts_names_with_or_without_colons() {
+        assert_eq!(normalize_emoji("car").unwrap(), ":car:");
+        assert_eq!(normalize_emoji(":car:").unwrap(), ":car:");
+        assert_eq!(normalize_emoji(" +1 ").unwrap(), ":+1:");
+        assert_eq!(
+            normalize_emoji("virtual-meeting").unwrap(),
+            ":virtual-meeting:"
+        );
+    }
+
+    #[test]
+    fn emoji_rejects_anything_that_isnt_a_name() {
+        for bad in ["", "::", "two words", "🚗", "car\", \"x", "a:b"] {
+            assert!(normalize_emoji(bad).is_err(), "{bad:?} should be rejected");
+        }
+    }
+
+    #[test]
+    fn config_errors_name_the_bad_entry() {
+        let err = keywords_from("[keywords.away]\nemoji = \"two words\"").unwrap_err();
+        assert!(err.starts_with("[keywords.away] emoji:"), "{err}");
+    }
+
+    #[test]
+    fn config_rejects_unknown_fields() {
+        assert!(toml::from_str::<Config>("[keywords.away]\nemjoi = \"car\"").is_err());
+    }
+
+    #[test]
+    fn shared_emoji_is_a_warning() {
+        let (_, warnings) = keywords_from("[keywords.meeting]\nemoji = \"pair\"").unwrap();
+        assert_eq!(
+            warnings,
+            ["pairing and meeting share :pair:, so st clear --if can't tell them apart"]
         );
     }
 
