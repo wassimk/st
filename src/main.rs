@@ -544,6 +544,8 @@ fn keyword_names(keywords: &[Keyword]) -> String {
 
 // --- GitHub integration ---
 
+const GRAPHQL_ERROR: &str = "GraphQL error";
+
 fn github_graphql(token: &str, body: &serde_json::Value) -> Result<serde_json::Value> {
     let resp: serde_json::Value = ureq::post("https://api.github.com/graphql")
         .header("Authorization", &format!("Bearer {token}"))
@@ -553,30 +555,50 @@ fn github_graphql(token: &str, body: &serde_json::Value) -> Result<serde_json::V
         .read_json()?;
 
     if let Some(errors) = resp.get("errors") {
-        anyhow::bail!("GraphQL error: {errors}");
+        anyhow::bail!("{GRAPHQL_ERROR}: {errors}");
     }
 
     Ok(resp)
 }
 
+// Returns whether the emoji was set. A custom Slack emoji from the config, like :ooo:, may not
+// exist on GitHub, so when GitHub rejects the status it's set again without the emoji.
 fn set_github_status(
     keyword: &Keyword,
     text: &str,
     back_date: Option<DateTime<Local>>,
     org_id: Option<&str>,
-) -> Result<()> {
+) -> Result<bool> {
     let token = std::env::var("GITHUB_PAT").context("GITHUB_PAT not set")?;
 
-    if !keyword.base.github_busy {
-        return Ok(());
+    let with_emoji = github_status_query(text, Some(&keyword.emoji), back_date, org_id)?;
+    match github_graphql(&token, &serde_json::json!({ "query": with_emoji })) {
+        Ok(_) => Ok(true),
+        Err(e) if e.to_string().starts_with(GRAPHQL_ERROR) => {
+            let without_emoji = github_status_query(text, None, back_date, org_id)?;
+            github_graphql(&token, &serde_json::json!({ "query": without_emoji }))
+                .map(|_| false)
+                .map_err(|_| e)
+        }
+        Err(e) => Err(e),
     }
+}
 
+fn github_status_query(
+    text: &str,
+    emoji: Option<&str>,
+    back_date: Option<DateTime<Local>>,
+    org_id: Option<&str>,
+) -> Result<String> {
     // A JSON string is also a valid GraphQL string, so quotes in a custom message are escaped
     let mut input = format!(
-        "message: {}, emoji: {}, limitedAvailability: true",
-        serde_json::to_string(text)?,
-        serde_json::to_string(&keyword.emoji)?,
+        "message: {}, limitedAvailability: true",
+        serde_json::to_string(text)?
     );
+
+    if let Some(emoji) = emoji {
+        input.push_str(&format!(", emoji: {}", serde_json::to_string(emoji)?));
+    }
 
     if let Some(dt) = back_date {
         input.push_str(&format!(
@@ -589,13 +611,9 @@ fn set_github_status(
         input.push_str(&format!(", organizationId: \"{}\"", id));
     }
 
-    let query =
-        format!("mutation {{ changeUserStatus(input: {{ {input} }}) {{ status {{ message }} }} }}");
-
-    let body = serde_json::json!({ "query": query });
-    github_graphql(&token, &body)?;
-
-    Ok(())
+    Ok(format!(
+        "mutation {{ changeUserStatus(input: {{ {input} }}) {{ status {{ message }} }} }}"
+    ))
 }
 
 fn clear_github_status() -> Result<()> {
@@ -1132,13 +1150,18 @@ fn run_set(keyword: &Keyword, text: &str, back_date: Option<DateTime<Local>>, co
         }
     } else if status.github_busy {
         match set_github_status(keyword, text, back_date, config.github_org_id.as_deref()) {
-            Ok(()) => {
+            Ok(emoji_set) => {
                 let org = match (&config.github_org_id, &config.github_org_name) {
                     (Some(_), Some(name)) => format!(" ({name} only)"),
                     (Some(_), None) => " (org only)".to_string(),
                     _ => String::new(),
                 };
-                println!("  GitHub  \u{2713} Limited availability{org}");
+                let emoji = if emoji_set {
+                    String::new()
+                } else {
+                    format!(", without {} since GitHub doesn't have it", keyword.emoji)
+                };
+                println!("  GitHub  \u{2713} Limited availability{org}{emoji}");
             }
             Err(e) => eprintln!("  GitHub  \u{2717} {e}"),
         }
@@ -1447,6 +1470,17 @@ mod tests {
         let cli = Cli::try_parse_from(["st", "keywords", "--json"]).unwrap();
         assert_eq!(cli.keyword, "keywords");
         assert!(cli.json);
+    }
+
+    #[test]
+    fn github_query_escapes_text_and_can_leave_out_the_emoji() {
+        let with = github_status_query("Say \"hi\"", Some(":ooo:"), None, Some("O_1")).unwrap();
+        assert_eq!(
+            with,
+            r#"mutation { changeUserStatus(input: { message: "Say \"hi\"", limitedAvailability: true, emoji: ":ooo:", organizationId: "O_1" }) { status { message } } }"#
+        );
+        let without = github_status_query("Out", None, None, None).unwrap();
+        assert!(!without.contains("emoji"));
     }
 
     #[test]
