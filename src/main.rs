@@ -916,7 +916,7 @@ struct Cli {
     #[arg(long)]
     json: bool,
 
-    /// Also turn macOS Do Not Disturb on (with a keyword) or off (with clear)
+    /// Also turn macOS Do Not Disturb on (with a keyword) or off (with clear or back)
     #[arg(long)]
     focus: bool,
 }
@@ -2147,3 +2147,19 @@ mod focus_flag_position_tests {
     }
 }
 
+#[cfg(test)]
+mod focus_help_tests {
+    use super::*;
+    use clap::CommandFactory;
+
+    #[test]
+    fn focus_help_names_clear_and_back() {
+        let command = Cli::command();
+        let focus = command
+            .get_arguments()
+            .find(|arg| arg.get_id() == "focus")
+            .unwrap();
+        let help = focus.get_help().unwrap().to_string();
+        assert!(help.contains("off (with clear or back)"), "{help}");
+    }
+}
