@@ -83,6 +83,25 @@ st clear              # Clear everything
 st clear --if meeting # Clear the meeting status, but leave lunch or anything else alone
 ```
 
+### Focus
+
+Add `--focus` to also turn on macOS Do Not Disturb, which is handy for meetings and pairing. If the status has an end time, Do Not Disturb turns itself off then too. `clear` and `back` turn it off.
+
+```
+st meeting --focus             # In a meeting, Do Not Disturb on until you turn it off
+st pairing 3pm --focus         # Pairing until 3pm, Do Not Disturb off at 3pm
+st clear --focus               # Clear everything and turn Do Not Disturb off
+st clear --if meeting --focus  # Same, but if your status changed (to lunch, say), both stay
+```
+
+macOS has no public way for apps to change Focus, so `st` uses a shortcut in the Shortcuts app. Install it once:
+
+```
+st setup-focus
+```
+
+It opens an Add Shortcut window. After you click Add Shortcut, it turns Do Not Disturb on and off once to check that it works. Allow any prompt macOS shows then. Keep the shortcut named `st Focus`, since `st` runs it by name.
+
 ### Custom Messages
 
 Every keyword except `clear` takes an optional message that replaces the default status text in Slack and GitHub. Put it after the date and time, or skip the date entirely:
