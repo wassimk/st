@@ -855,6 +855,14 @@ Keywords:
             Clears the Slack status, ends DND, and sets you active, but only if the
             status emoji is still KEYWORD's (needs the users.profile:read scope)
   keywords  Lists every keyword with its emoji and text, including your own (--json for JSON)
+  setup-focus
+            Installs the st Focus shortcut that --focus needs
+
+Focus:
+  Add --focus to also turn macOS Do Not Disturb on with a keyword, until the status ends if it
+  has an end time, or off with clear or back. With clear --if, Do Not Disturb stays on when
+  your status changed to something else. Run st setup-focus once first.
+  st meeting 3pm --focus  In a meeting and Do Not Disturb on until 3pm
 
 Change a keyword's emoji or text, or add your own, in ~/.config/st/config.toml:
   [keywords.meeting]
