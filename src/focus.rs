@@ -405,7 +405,7 @@ mod shell_tests {
 
     #[test]
     fn hung_command_is_killed_at_the_deadline() {
-        let (sh, _) = script("sleep 30");
+        let (sh, _) = script("exec sleep 30");
         let start = Instant::now();
         let err = sh
             .run(
