@@ -905,7 +905,7 @@ struct Cli {
     back_date: Option<String>,
 
     /// What time you'll be back (see Times below), then an optional custom message
-    #[arg(value_name = "BACK_TIME] [MESSAGE", trailing_var_arg = true)]
+    #[arg(value_name = "BACK_TIME] [MESSAGE")]
     extra: Vec<String>,
 
     /// With clear, only clear the Slack status if its emoji matches this keyword's
@@ -2104,5 +2104,44 @@ mod setup_focus_tests {
     #[test]
     fn setup_focus_is_reserved() {
         assert!(RESERVED_NAMES.contains(&"setup-focus"));
+    }
+}
+
+#[cfg(test)]
+mod focus_flag_position_tests {
+    use super::*;
+
+    fn parse(args: &[&str]) -> (bool, Args) {
+        let cli = Cli::try_parse_from(args).unwrap();
+        let words: Vec<String> = cli.back_date.into_iter().chain(cli.extra).collect();
+        (cli.focus, parse_args(&cli.keyword, &words))
+    }
+
+    #[test]
+    fn focus_after_a_date_and_time_is_a_flag() {
+        let (focus, args) = parse(&["st", "meeting", "tomorrow", "3pm", "--focus"]);
+        assert!(focus);
+        assert_eq!(args.message, None);
+    }
+
+    #[test]
+    fn focus_after_a_message_is_a_flag() {
+        let (focus, args) = parse(&["st", "meeting", "tomorrow", "3pm", "Planning", "--focus"]);
+        assert!(focus);
+        assert_eq!(args.message.as_deref(), Some("Planning"));
+    }
+
+    #[test]
+    fn focus_after_a_multi_word_message_is_a_flag() {
+        let (focus, args) = parse(&["st", "meeting", "Standup", "sync", "--focus"]);
+        assert!(focus);
+        assert_eq!(args.message.as_deref(), Some("Standup sync"));
+    }
+
+    #[test]
+    fn multi_word_messages_still_work_without_flags() {
+        let (focus, args) = parse(&["st", "vacation", "3/10", "At", "the", "beach"]);
+        assert!(!focus);
+        assert_eq!(args.message.as_deref(), Some("At the beach"));
     }
 }
