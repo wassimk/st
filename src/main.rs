@@ -411,7 +411,7 @@ fn normalize_emoji(input: &str) -> Result<String, String> {
 }
 
 // Words st reads itself, which a config keyword can't take over
-const RESERVED_NAMES: &[&str] = &["clear", "keywords"];
+const RESERVED_NAMES: &[&str] = &["clear", "keywords", "setup-focus"];
 
 fn is_builtin(name: &str) -> bool {
     STATUSES.iter().any(|s| s.keyword == name)
@@ -1005,6 +1005,30 @@ fn main() {
             println!("{:#}", keywords_json(&keywords));
         } else {
             print!("{}", keywords_table(&keywords));
+        }
+        return;
+    }
+    if name == "setup-focus" {
+        let open = |path: &std::path::Path| {
+            std::process::Command::new("/usr/bin/open")
+                .arg(path)
+                .status()
+                .map_err(|e| format!("Couldn't open {}: {e}", path.display()))
+                .and_then(|status| {
+                    status
+                        .success()
+                        .then_some(())
+                        .ok_or_else(|| format!("open {} failed with {status}", path.display()))
+                })
+        };
+        let wait = std::time::Duration::from_secs(120);
+        let poll = std::time::Duration::from_secs(1);
+        match focus::setup(&focus::ShellShortcuts::default(), open, wait, poll) {
+            Ok(message) => println!("{message}"),
+            Err(e) => {
+                eprintln!("{e}");
+                std::process::exit(1);
+            }
         }
         return;
     }
@@ -2062,5 +2086,15 @@ mod focus_flag_tests {
         assert!(cli.focus);
         let cli = Cli::try_parse_from(["st", "meeting"]).unwrap();
         assert!(!cli.focus);
+    }
+}
+
+#[cfg(test)]
+mod setup_focus_tests {
+    use super::*;
+
+    #[test]
+    fn setup_focus_is_reserved() {
+        assert!(RESERVED_NAMES.contains(&"setup-focus"));
     }
 }

@@ -3,7 +3,7 @@
 
 use chrono::{DateTime, Local, TimeDelta};
 use std::io::Read;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::process::{Command, Output, Stdio};
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::time::{Duration, Instant};
@@ -180,16 +180,70 @@ fn failure_message(output: &Output) -> String {
     }
 }
 
+pub const SHORTCUT_FILE: &[u8] = include_bytes!("../assets/st Focus.shortcut");
+
+/// Opens the bundled shortcut for the user to add, waits for it, then runs it once each way so
+/// any first-run macOS prompt appears now, while someone is at the keyboard.
+pub fn setup(
+    shortcuts: &impl Shortcuts,
+    open: impl Fn(&Path) -> Result<(), String>,
+    wait: Duration,
+    poll: Duration,
+) -> Result<String, String> {
+    let installed = || {
+        shortcuts
+            .list(Instant::now() + BUDGET)
+            .map(|names| is_installed(&names))
+    };
+
+    if installed()? {
+        return Ok(format!(
+            "The {SHORTCUT_NAME} shortcut is already installed."
+        ));
+    }
+
+    // Shortcuts names an imported shortcut after its file
+    let dir = std::env::temp_dir().join("st-focus");
+    let path = dir.join(format!("{SHORTCUT_NAME}.shortcut"));
+    std::fs::create_dir_all(&dir)
+        .and_then(|()| std::fs::write(&path, SHORTCUT_FILE))
+        .map_err(|e| format!("Couldn't write {}: {e}", path.display()))?;
+    open(&path)?;
+    println!("Click Add Shortcut in the window that opened.");
+
+    let give_up = Instant::now() + wait;
+    while !installed()? {
+        if Instant::now() >= give_up {
+            return Err(format!(
+                "The {SHORTCUT_NAME} shortcut wasn't added. Run st setup-focus again and click Add Shortcut."
+            ));
+        }
+        std::thread::sleep(poll);
+    }
+
+    println!(
+        "Turning Do Not Disturb on and off once to check it works. If macOS asks for permission, allow it."
+    );
+    for input in ["on", "off"] {
+        shortcuts.run(SHORTCUT_NAME, input, Instant::now() + BUDGET)?;
+    }
+    Ok(format!(
+        "The {SHORTCUT_NAME} shortcut is installed and working."
+    ))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use chrono::TimeZone;
-    use std::cell::RefCell;
+    use std::cell::{Cell, RefCell};
 
     pub(super) struct FakeShortcuts {
         names: Result<Vec<String>, String>,
         run_result: Result<(), String>,
         runs: RefCell<Vec<(String, String)>>,
+        // list() reports nothing installed for this many more calls
+        hidden_for: Cell<usize>,
     }
 
     impl FakeShortcuts {
@@ -198,11 +252,25 @@ mod tests {
                 names: Ok(names.iter().map(|n| n.to_string()).collect()),
                 run_result: Ok(()),
                 runs: RefCell::default(),
+                hidden_for: Cell::new(0),
             }
         }
 
         pub(super) fn installed() -> Self {
             Self::listing(&[SHORTCUT_NAME])
+        }
+
+        pub(super) fn appears_after(calls: usize) -> Self {
+            let fake = Self::installed();
+            fake.hidden_for.set(calls);
+            fake
+        }
+
+        pub(super) fn with_run_error(self, message: &str) -> Self {
+            FakeShortcuts {
+                run_result: Err(message.to_string()),
+                ..self
+            }
         }
 
         fn run_error(message: &str) -> Self {
@@ -226,6 +294,11 @@ mod tests {
 
     impl Shortcuts for FakeShortcuts {
         fn list(&self, _deadline: Instant) -> Result<Vec<String>, String> {
+            let hidden = self.hidden_for.get();
+            if hidden > 0 {
+                self.hidden_for.set(hidden - 1);
+                return Ok(Vec::new());
+            }
             self.names.clone()
         }
 
@@ -432,5 +505,88 @@ mod shell_tests {
             ShellShortcuts::default().program,
             PathBuf::from("/usr/bin/shortcuts")
         );
+    }
+}
+
+#[cfg(test)]
+mod setup_tests {
+    use super::tests::FakeShortcuts;
+    use super::*;
+    use std::cell::RefCell;
+
+    fn ms(n: u64) -> Duration {
+        Duration::from_millis(n)
+    }
+
+    #[test]
+    fn setup_skips_when_already_installed() {
+        let msg = setup(
+            &FakeShortcuts::installed(),
+            |_| panic!("should not open"),
+            ms(50),
+            ms(10),
+        )
+        .unwrap();
+        assert_eq!(msg, "The st Focus shortcut is already installed.");
+    }
+
+    #[test]
+    fn setup_opens_the_file_by_its_shortcut_name() {
+        let opened = RefCell::new(None);
+        setup(
+            &FakeShortcuts::appears_after(2),
+            |p| {
+                *opened.borrow_mut() = Some(p.to_path_buf());
+                Ok(())
+            },
+            ms(500),
+            ms(10),
+        )
+        .unwrap();
+        let path = opened.into_inner().unwrap();
+        assert_eq!(path.file_name().unwrap(), "st Focus.shortcut");
+        assert_eq!(std::fs::read(&path).unwrap(), SHORTCUT_FILE);
+    }
+
+    #[test]
+    fn setup_runs_on_then_off_once_installed() {
+        let fake = FakeShortcuts::appears_after(1);
+        let msg = setup(&fake, |_| Ok(()), ms(500), ms(10)).unwrap();
+        assert_eq!(msg, "The st Focus shortcut is installed and working.");
+        assert_eq!(
+            fake.runs(),
+            vec![
+                ("st Focus".to_string(), "on".to_string()),
+                ("st Focus".to_string(), "off".to_string()),
+            ]
+        );
+    }
+
+    #[test]
+    fn setup_gives_up_when_never_added() {
+        let err = setup(&FakeShortcuts::listing(&[]), |_| Ok(()), ms(50), ms(10)).unwrap_err();
+        assert_eq!(
+            err,
+            "The st Focus shortcut wasn't added. Run st setup-focus again and click Add Shortcut."
+        );
+    }
+
+    #[test]
+    fn setup_reports_a_failed_test_run() {
+        let fake = FakeShortcuts::appears_after(1).with_run_error("Error: nope");
+        let err = setup(&fake, |_| Ok(()), ms(500), ms(10)).unwrap_err();
+        assert_eq!(err, "Error: nope");
+    }
+
+    #[test]
+    fn setup_reports_an_open_failure() {
+        let err = setup(
+            &FakeShortcuts::listing(&[]),
+            |_| Err("open failed".to_string()),
+            ms(50),
+            ms(10),
+        )
+        .unwrap_err();
+        assert_eq!(err, "open failed");
     }
 }
