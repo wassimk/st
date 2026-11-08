@@ -1,4 +1,3 @@
-#[allow(dead_code)] // Wired into main in Task 4
 mod focus;
 
 use anyhow::{Context, Result};
@@ -908,6 +907,10 @@ struct Cli {
     /// With keywords, print them as JSON
     #[arg(long)]
     json: bool,
+
+    /// Also turn macOS Do Not Disturb on (with a keyword) or off (with clear)
+    #[arg(long)]
+    focus: bool,
 }
 
 // The word after the date is a time only if it parses as one; the rest is the message
@@ -993,6 +996,10 @@ fn main() {
         eprintln!("--json only works with keywords (st keywords --json)");
         std::process::exit(1);
     }
+    if cli.focus && name == "keywords" {
+        eprintln!("--focus doesn't work with keywords");
+        std::process::exit(1);
+    }
     if name == "keywords" {
         if cli.json {
             println!("{:#}", keywords_json(&keywords));
@@ -1065,13 +1072,77 @@ fn main() {
         })
     };
 
-    if let Some(set_by) = clear_if {
-        run_clear_if(set_by);
+    let request = if let Some(set_by) = clear_if {
+        clear_if_focus(&run_clear_if(set_by))
     } else if is_clear {
         run_clear();
+        Some(focus_request(None, None))
     } else if let Some(selected) = selected {
         let text = args.message.as_deref().unwrap_or(&selected.text);
         run_set(selected, text, back_dt, &config);
+        Some(focus_request(Some(selected), back_dt))
+    } else {
+        None
+    };
+
+    // Runs last so a slow or failing Focus call never delays Slack, GitHub, or Linear
+    if cli.focus {
+        let outcome = match request {
+            Some(request) => {
+                focus::apply(&focus::ShellShortcuts::default(), &request, Local::now())
+            }
+            None => focus::FocusOutcome::Skipped("Skipped, Slack status wasn't cleared".into()),
+        };
+        match focus_line(&outcome, Local::now().date_naive()) {
+            (true, line) => eprintln!("{line}"),
+            (false, line) => println!("{line}"),
+        }
+    }
+}
+
+// Focus follows the status: on until it ends, and off for back and clear
+fn focus_request(
+    keyword: Option<&Keyword>,
+    back_dt: Option<DateTime<Local>>,
+) -> focus::FocusRequest {
+    match (keyword, back_dt) {
+        (None, _) => focus::FocusRequest::Off,
+        (Some(k), _) if k.behavior() == "back" => focus::FocusRequest::Off,
+        (Some(_), Some(end)) => focus::FocusRequest::Until(end),
+        (Some(_), None) => focus::FocusRequest::On,
+    }
+}
+
+#[derive(Debug, PartialEq)]
+enum ClearIf {
+    Cleared,
+    NoStatus,
+    OtherStatus,
+    ReadFailed,
+}
+
+// A status the user set afterward, like lunch, keeps Focus on. With no status, nothing wants quiet.
+fn clear_if_focus(result: &ClearIf) -> Option<focus::FocusRequest> {
+    match result {
+        ClearIf::Cleared | ClearIf::NoStatus => Some(focus::FocusRequest::Off),
+        ClearIf::OtherStatus | ClearIf::ReadFailed => None,
+    }
+}
+
+fn focus_line(outcome: &focus::FocusOutcome, today: NaiveDate) -> (bool, String) {
+    use focus::FocusOutcome;
+    match outcome {
+        FocusOutcome::On => (false, "  Focus   \u{2713} Do Not Disturb on".to_string()),
+        FocusOutcome::OnUntil(end) => (
+            false,
+            format!(
+                "  Focus   \u{2713} Do Not Disturb on until {}",
+                format_until(*end, today)
+            ),
+        ),
+        FocusOutcome::Off => (false, "  Focus   \u{2713} Do Not Disturb off".to_string()),
+        FocusOutcome::Skipped(reason) => (false, format!("  Focus   - {reason}")),
+        FocusOutcome::Failed(reason) => (true, format!("  Focus   \u{2717} {reason}")),
     }
 }
 
@@ -1191,8 +1262,8 @@ fn run_set(keyword: &Keyword, text: &str, back_date: Option<DateTime<Local>>, co
 
 // When the status still matches, clears like `st clear` does on Slack: the status, DND, and
 // presence. Anything set after it, like lunch, is skipped along with its DND. GitHub is left alone.
-fn run_clear_if(set_by: &Keyword) {
-    match get_slack_status_emoji() {
+fn run_clear_if(set_by: &Keyword) -> ClearIf {
+    let result = match get_slack_status_emoji() {
         Ok(emoji) if should_clear(&emoji, &set_by.emoji) => {
             match clear_slack_status() {
                 Ok(()) => println!("  Slack   \u{2713} Cleared {} (DND off)", set_by.emoji),
@@ -1202,13 +1273,25 @@ fn run_clear_if(set_by: &Keyword) {
                 Ok(()) => println!("  Slack   \u{2713} Active"),
                 Err(e) => eprintln!("  Slack   \u{2717} setting active: {e}"),
             }
+            ClearIf::Cleared
         }
-        Ok(emoji) => println!("  Slack   - {}", skip_message(&emoji, &set_by.emoji)),
-        Err(e) => eprintln!("  Slack   \u{2717} {e}"),
-    }
+        Ok(emoji) => {
+            println!("  Slack   - {}", skip_message(&emoji, &set_by.emoji));
+            if emoji.is_empty() {
+                ClearIf::NoStatus
+            } else {
+                ClearIf::OtherStatus
+            }
+        }
+        Err(e) => {
+            eprintln!("  Slack   \u{2717} {e}");
+            ClearIf::ReadFailed
+        }
+    };
 
     println!("  GitHub  - No change");
     println!("  Linear  - No change");
+    result
 }
 
 fn run_clear() {
@@ -1866,5 +1949,118 @@ mod tests {
         let today = date(2026, 1, 1);
         assert_eq!(parse_date_with_separators("13/1", today), None);
         assert_eq!(parse_date_with_separators("friday", today), None);
+    }
+}
+
+#[cfg(test)]
+mod focus_flag_tests {
+    use super::*;
+    use chrono::TimeZone;
+    use focus::{FocusOutcome, FocusRequest};
+
+    fn kw(name: &str) -> Keyword {
+        find_keyword(&builtin_keywords(), name).unwrap().clone()
+    }
+
+    fn custom(name: &str, base: &str) -> Keyword {
+        let entry = KeywordConfig {
+            base: Some(base.to_string()),
+            emoji: Some(":sparkles:".to_string()),
+            text: None,
+        };
+        custom_keyword(name, &entry, &builtin_keywords()).unwrap()
+    }
+
+    fn at(h: u32, m: u32) -> DateTime<Local> {
+        Local.with_ymd_and_hms(2026, 11, 9, h, m, 0).unwrap()
+    }
+
+    #[test]
+    fn focus_on_for_a_status_without_end() {
+        assert_eq!(focus_request(Some(&kw("meeting")), None), FocusRequest::On);
+    }
+
+    #[test]
+    fn focus_until_the_status_end() {
+        let end = at(15, 0);
+        assert_eq!(
+            focus_request(Some(&kw("meeting")), Some(end)),
+            FocusRequest::Until(end)
+        );
+    }
+
+    #[test]
+    fn back_and_clear_turn_focus_off() {
+        assert_eq!(
+            focus_request(Some(&kw("back")), Some(at(9, 15))),
+            FocusRequest::Off
+        );
+        assert_eq!(focus_request(None, None), FocusRequest::Off);
+    }
+
+    #[test]
+    fn custom_keyword_based_on_back_turns_focus_off() {
+        assert_eq!(
+            focus_request(Some(&custom("returned", "back")), None),
+            FocusRequest::Off
+        );
+    }
+
+    #[test]
+    fn custom_keyword_based_on_meeting_turns_focus_on() {
+        assert_eq!(
+            focus_request(Some(&custom("standup", "meeting")), None),
+            FocusRequest::On
+        );
+    }
+
+    #[test]
+    fn clear_if_focus_rules() {
+        assert_eq!(clear_if_focus(&ClearIf::Cleared), Some(FocusRequest::Off));
+        assert_eq!(clear_if_focus(&ClearIf::NoStatus), Some(FocusRequest::Off));
+        assert_eq!(clear_if_focus(&ClearIf::OtherStatus), None);
+        assert_eq!(clear_if_focus(&ClearIf::ReadFailed), None);
+    }
+
+    #[test]
+    fn focus_lines() {
+        let today = NaiveDate::from_ymd_opt(2026, 11, 9).unwrap();
+        assert_eq!(
+            focus_line(&FocusOutcome::On, today),
+            (false, "  Focus   \u{2713} Do Not Disturb on".to_string())
+        );
+        assert_eq!(
+            focus_line(&FocusOutcome::OnUntil(at(15, 0)), today),
+            (
+                false,
+                "  Focus   \u{2713} Do Not Disturb on until 3pm".to_string()
+            )
+        );
+        assert_eq!(
+            focus_line(&FocusOutcome::Off, today),
+            (false, "  Focus   \u{2713} Do Not Disturb off".to_string())
+        );
+        assert_eq!(
+            focus_line(
+                &FocusOutcome::Skipped("Skipped, Slack status wasn't cleared".into()),
+                today
+            ),
+            (
+                false,
+                "  Focus   - Skipped, Slack status wasn't cleared".to_string()
+            )
+        );
+        assert_eq!(
+            focus_line(&FocusOutcome::Failed("boom".into()), today),
+            (true, "  Focus   \u{2717} boom".to_string())
+        );
+    }
+
+    #[test]
+    fn focus_flag_parses() {
+        let cli = Cli::try_parse_from(["st", "meeting", "--focus"]).unwrap();
+        assert!(cli.focus);
+        let cli = Cli::try_parse_from(["st", "meeting"]).unwrap();
+        assert!(!cli.focus);
     }
 }
