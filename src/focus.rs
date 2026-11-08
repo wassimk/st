@@ -186,6 +186,7 @@ pub const SHORTCUT_FILE: &[u8] = include_bytes!("../assets/st Focus.shortcut");
 /// any first-run macOS prompt appears now, while someone is at the keyboard.
 pub fn setup(
     shortcuts: &impl Shortcuts,
+    dir: &Path,
     open: impl Fn(&Path) -> Result<(), String>,
     wait: Duration,
     poll: Duration,
@@ -203,9 +204,8 @@ pub fn setup(
     }
 
     // Shortcuts names an imported shortcut after its file
-    let dir = std::env::temp_dir().join("st-focus");
     let path = dir.join(format!("{SHORTCUT_NAME}.shortcut"));
-    std::fs::create_dir_all(&dir)
+    std::fs::create_dir_all(dir)
         .and_then(|()| std::fs::write(&path, SHORTCUT_FILE))
         .map_err(|e| format!("Couldn't write {}: {e}", path.display()))?;
     open(&path)?;
@@ -518,10 +518,21 @@ mod setup_tests {
         Duration::from_millis(n)
     }
 
+    // Tests run in parallel, so each gets its own folder for the shortcut file
+    fn test_dir() -> PathBuf {
+        static COUNTER: AtomicUsize = AtomicUsize::new(0);
+        std::env::temp_dir().join(format!(
+            "st-focus-setup-test-{}-{}",
+            std::process::id(),
+            COUNTER.fetch_add(1, Ordering::SeqCst)
+        ))
+    }
+
     #[test]
     fn setup_skips_when_already_installed() {
         let msg = setup(
             &FakeShortcuts::installed(),
+            &test_dir(),
             |_| panic!("should not open"),
             ms(50),
             ms(10),
@@ -532,9 +543,11 @@ mod setup_tests {
 
     #[test]
     fn setup_opens_the_file_by_its_shortcut_name() {
+        let dir = test_dir();
         let opened = RefCell::new(None);
         setup(
             &FakeShortcuts::appears_after(2),
+            &dir,
             |p| {
                 *opened.borrow_mut() = Some(p.to_path_buf());
                 Ok(())
@@ -544,14 +557,14 @@ mod setup_tests {
         )
         .unwrap();
         let path = opened.into_inner().unwrap();
-        assert_eq!(path.file_name().unwrap(), "st Focus.shortcut");
+        assert_eq!(path, dir.join("st Focus.shortcut"));
         assert_eq!(std::fs::read(&path).unwrap(), SHORTCUT_FILE);
     }
 
     #[test]
     fn setup_runs_on_then_off_once_installed() {
         let fake = FakeShortcuts::appears_after(1);
-        let msg = setup(&fake, |_| Ok(()), ms(500), ms(10)).unwrap();
+        let msg = setup(&fake, &test_dir(), |_| Ok(()), ms(500), ms(10)).unwrap();
         assert_eq!(msg, "The st Focus shortcut is installed and working.");
         assert_eq!(
             fake.runs(),
@@ -564,7 +577,14 @@ mod setup_tests {
 
     #[test]
     fn setup_gives_up_when_never_added() {
-        let err = setup(&FakeShortcuts::listing(&[]), |_| Ok(()), ms(50), ms(10)).unwrap_err();
+        let err = setup(
+            &FakeShortcuts::listing(&[]),
+            &test_dir(),
+            |_| Ok(()),
+            ms(50),
+            ms(10),
+        )
+        .unwrap_err();
         assert_eq!(
             err,
             "The st Focus shortcut wasn't added. Run st setup-focus again and click Add Shortcut."
@@ -574,7 +594,7 @@ mod setup_tests {
     #[test]
     fn setup_reports_a_failed_test_run() {
         let fake = FakeShortcuts::appears_after(1).with_run_error("Error: nope");
-        let err = setup(&fake, |_| Ok(()), ms(500), ms(10)).unwrap_err();
+        let err = setup(&fake, &test_dir(), |_| Ok(()), ms(500), ms(10)).unwrap_err();
         assert_eq!(err, "Error: nope");
     }
 
@@ -582,6 +602,7 @@ mod setup_tests {
     fn setup_reports_an_open_failure() {
         let err = setup(
             &FakeShortcuts::listing(&[]),
+            &test_dir(),
             |_| Err("open failed".to_string()),
             ms(50),
             ms(10),

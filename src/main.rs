@@ -1031,7 +1031,8 @@ fn main() {
         };
         let wait = std::time::Duration::from_secs(120);
         let poll = std::time::Duration::from_secs(1);
-        match focus::setup(&focus::ShellShortcuts::default(), open, wait, poll) {
+        let dir = std::env::temp_dir().join("st-focus");
+        match focus::setup(&focus::ShellShortcuts::default(), &dir, open, wait, poll) {
             Ok(message) => println!("{message}"),
             Err(e) => {
                 eprintln!("{e}");
@@ -2145,3 +2146,4 @@ mod focus_flag_position_tests {
         assert_eq!(args.message.as_deref(), Some("At the beach"));
     }
 }
+
