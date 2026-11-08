@@ -1,3 +1,6 @@
+#[allow(dead_code)] // Wired into main in Task 4
+mod focus;
+
 use anyhow::{Context, Result};
 use chrono::{DateTime, Datelike, Local, NaiveDate, NaiveTime, Timelike, Weekday};
 use clap::Parser;
