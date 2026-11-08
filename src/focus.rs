@@ -2,6 +2,10 @@
 //! public API for Focus.
 
 use chrono::{DateTime, Local, TimeDelta};
+use std::io::Read;
+use std::path::PathBuf;
+use std::process::{Command, Output, Stdio};
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::time::{Duration, Instant};
 
 pub const SHORTCUT_NAME: &str = "st Focus";
@@ -77,6 +81,102 @@ pub fn apply(
         (FocusRequest::Off, _) => FocusOutcome::Off,
         (_, Some(end)) => FocusOutcome::OnUntil(end),
         _ => FocusOutcome::On,
+    }
+}
+
+pub struct ShellShortcuts {
+    pub program: PathBuf,
+}
+
+impl Default for ShellShortcuts {
+    fn default() -> Self {
+        ShellShortcuts {
+            program: PathBuf::from("/usr/bin/shortcuts"),
+        }
+    }
+}
+
+impl ShellShortcuts {
+    fn output(&self, args: &[&str], deadline: Instant) -> Result<Output, String> {
+        let mut child = Command::new(&self.program)
+            .args(args)
+            .stdin(Stdio::null())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .spawn()
+            .map_err(|e| format!("Couldn't run {}: {e}", self.program.display()))?;
+
+        // shortcuts prints a few lines at most, so reading after exit can't fill the pipes
+        let status = loop {
+            match child.try_wait() {
+                Ok(Some(status)) => break status,
+                Ok(None) if Instant::now() >= deadline => {
+                    let _ = child.kill();
+                    let _ = child.wait();
+                    return Err(format!("timed out after {}s", BUDGET.as_secs()));
+                }
+                Ok(None) => std::thread::sleep(Duration::from_millis(50)),
+                Err(e) => return Err(format!("Couldn't wait for shortcuts: {e}")),
+            }
+        };
+
+        let mut stdout = Vec::new();
+        let mut stderr = Vec::new();
+        if let Some(mut out) = child.stdout.take() {
+            let _ = out.read_to_end(&mut stdout);
+        }
+        if let Some(mut err) = child.stderr.take() {
+            let _ = err.read_to_end(&mut stderr);
+        }
+        Ok(Output {
+            status,
+            stdout,
+            stderr,
+        })
+    }
+}
+
+impl Shortcuts for ShellShortcuts {
+    fn list(&self, deadline: Instant) -> Result<Vec<String>, String> {
+        let output = self.output(&["list"], deadline)?;
+        if !output.status.success() {
+            return Err(failure_message(&output));
+        }
+        Ok(String::from_utf8_lossy(&output.stdout)
+            .lines()
+            .map(str::to_string)
+            .collect())
+    }
+
+    fn run(&self, name: &str, input: &str, deadline: Instant) -> Result<(), String> {
+        static RUNS: AtomicUsize = AtomicUsize::new(0);
+        let input_path = std::env::temp_dir().join(format!(
+            "st-focus-{}-{}.txt",
+            std::process::id(),
+            RUNS.fetch_add(1, Ordering::Relaxed)
+        ));
+        std::fs::write(&input_path, input)
+            .map_err(|e| format!("Couldn't write {}: {e}", input_path.display()))?;
+
+        let path = input_path.display().to_string();
+        let result = self.output(&["run", name, "--input-path", &path], deadline);
+        let _ = std::fs::remove_file(&input_path);
+
+        let output = result?;
+        if output.status.success() {
+            Ok(())
+        } else {
+            Err(failure_message(&output))
+        }
+    }
+}
+
+fn failure_message(output: &Output) -> String {
+    let stderr = String::from_utf8_lossy(&output.stderr).trim().to_string();
+    if stderr.is_empty() {
+        format!("shortcuts exited with {}", output.status)
+    } else {
+        stderr
     }
 }
 
@@ -238,6 +338,99 @@ mod tests {
                 now()
             ),
             FocusOutcome::Failed("nope".into())
+        );
+    }
+}
+
+#[cfg(test)]
+mod shell_tests {
+    use super::*;
+    use std::os::unix::fs::PermissionsExt;
+    use std::path::PathBuf;
+
+    fn script(body: &str) -> (ShellShortcuts, PathBuf) {
+        static COUNTER: AtomicUsize = AtomicUsize::new(0);
+        let dir = std::env::temp_dir().join(format!(
+            "st-focus-test-{}-{}",
+            std::process::id(),
+            COUNTER.fetch_add(1, Ordering::SeqCst)
+        ));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("shortcuts");
+        let log = dir.join("log");
+        let body = body.replace("$LOG", &log.display().to_string());
+        std::fs::write(&path, format!("#!/bin/sh\n{body}\n")).unwrap();
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o755)).unwrap();
+        (ShellShortcuts { program: path }, log)
+    }
+
+    fn deadline() -> Instant {
+        Instant::now() + BUDGET
+    }
+
+    #[test]
+    fn list_returns_one_name_per_line() {
+        let (sh, _) = script("printf 'dnd-on\\nst Focus\\n'");
+        assert_eq!(
+            sh.list(deadline()).unwrap(),
+            vec!["dnd-on".to_string(), "st Focus".to_string()]
+        );
+    }
+
+    #[test]
+    fn run_passes_name_and_input_file() {
+        let (sh, log) = script("printf '%s\\n' \"$*\" > \"$LOG\"; cat \"$4\" >> \"$LOG\"");
+        sh.run("st Focus", "on", deadline()).unwrap();
+        let logged = std::fs::read_to_string(log).unwrap();
+        let (args, input) = logged.split_once('\n').unwrap();
+        assert!(args.starts_with("run st Focus --input-path "), "{args}");
+        assert_eq!(input, "on");
+    }
+
+    #[test]
+    fn nonzero_exit_reports_stderr() {
+        let (sh, _) = script("echo 'Error: nope' >&2; exit 1");
+        assert_eq!(
+            sh.run("st Focus", "on", deadline()).unwrap_err(),
+            "Error: nope"
+        );
+    }
+
+    #[test]
+    fn nonzero_exit_without_stderr_names_the_status() {
+        let (sh, _) = script("exit 3");
+        let err = sh.run("st Focus", "on", deadline()).unwrap_err();
+        assert!(err.starts_with("shortcuts exited with"), "{err}");
+    }
+
+    #[test]
+    fn hung_command_is_killed_at_the_deadline() {
+        let (sh, _) = script("sleep 30");
+        let start = Instant::now();
+        let err = sh
+            .run(
+                "st Focus",
+                "on",
+                Instant::now() + Duration::from_millis(300),
+            )
+            .unwrap_err();
+        assert_eq!(err, "timed out after 10s");
+        assert!(start.elapsed() < Duration::from_secs(2));
+    }
+
+    #[test]
+    fn input_file_is_removed_afterward() {
+        let (sh, log) = script("printf '%s' \"$4\" > \"$LOG\"");
+        sh.run("st Focus", "off", deadline()).unwrap();
+        let input_path = std::fs::read_to_string(log).unwrap();
+        assert!(!std::path::Path::new(&input_path).exists(), "{input_path}");
+    }
+
+    #[test]
+    fn default_uses_the_system_shortcuts() {
+        assert_eq!(
+            ShellShortcuts::default().program,
+            PathBuf::from("/usr/bin/shortcuts")
         );
     }
 }
