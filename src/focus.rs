@@ -37,18 +37,15 @@ pub trait Shortcuts {
     fn run(&self, name: &str, input: &str, deadline: Instant) -> Result<(), String>;
 }
 
-fn usable_until(request: &FocusRequest, now: DateTime<Local>) -> Option<DateTime<Local>> {
+// The text sent to the shortcut, and what to report if the run succeeds
+fn resolve(request: &FocusRequest, now: DateTime<Local>) -> (String, FocusOutcome) {
     match request {
-        FocusRequest::Until(end) if *end - now >= MIN_UNTIL => Some(*end),
-        _ => None,
-    }
-}
-
-pub fn shortcut_input(request: &FocusRequest, now: DateTime<Local>) -> String {
-    match (request, usable_until(request, now)) {
-        (FocusRequest::Off, _) => "off".to_string(),
-        (_, Some(end)) => end.format("%Y-%m-%dT%H:%M:%S%z").to_string(),
-        _ => "on".to_string(),
+        FocusRequest::Off => ("off".to_string(), FocusOutcome::Off),
+        FocusRequest::Until(end) if *end - now >= MIN_UNTIL => (
+            end.format("%Y-%m-%dT%H:%M:%S%z").to_string(),
+            FocusOutcome::OnUntil(*end),
+        ),
+        FocusRequest::On | FocusRequest::Until(_) => ("on".to_string(), FocusOutcome::On),
     }
 }
 
@@ -73,14 +70,10 @@ pub fn apply(
         Err(e) => return FocusOutcome::Failed(e),
     }
 
-    if let Err(e) = shortcuts.run(SHORTCUT_NAME, &shortcut_input(request, now), deadline) {
-        return FocusOutcome::Failed(e);
-    }
-
-    match (request, usable_until(request, now)) {
-        (FocusRequest::Off, _) => FocusOutcome::Off,
-        (_, Some(end)) => FocusOutcome::OnUntil(end),
-        _ => FocusOutcome::On,
+    let (input, outcome) = resolve(request, now);
+    match shortcuts.run(SHORTCUT_NAME, &input, deadline) {
+        Ok(()) => outcome,
+        Err(e) => FocusOutcome::Failed(e),
     }
 }
 
@@ -308,6 +301,10 @@ mod tests {
                 .push((name.to_string(), input.to_string()));
             self.run_result.clone()
         }
+    }
+
+    fn shortcut_input(request: &FocusRequest, now: DateTime<Local>) -> String {
+        resolve(request, now).0
     }
 
     fn now() -> DateTime<Local> {
